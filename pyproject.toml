@@ -13,6 +13,8 @@ dependencies = [
 [project.optional-dependencies]
 # Drawing the objects on a frame (perception.viz.draw).
 viz = ["opencv-python-headless"]
+# The geometry audit (perception.audit.geometry_audit); it also needs ffmpeg on the PATH.
+audit = ["opencv-python-headless", "safetensors"]
 
 [dependency-groups]
 dev = [
