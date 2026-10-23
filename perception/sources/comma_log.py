@@ -55,17 +55,27 @@ class Motion:
 class CommaLog:
     frames: dict[str, list[FrameRef]] = field(default_factory=lambda: {camera: [] for camera in CAMERA_STREAMS})
     calibrations: list[Calibration] = field(default_factory=list)
+    # logMonoTime of every calibration message that is not a usable calibration (uncalibrated, invalid,
+    # not finite): from there no calibration is in force until the next calibrated one.
+    calibration_resets: list[int] = field(default_factory=list)
     car_states: list = field(default_factory=list)  # (logMonoTime, carState reader)
     motion: list[Motion] = field(default_factory=list)
     _calibration_times: list[int] = field(default_factory=list, repr=False)
     _motion_times: list[int] = field(default_factory=list, repr=False)
 
     def calibration_at(self, t_ns: int) -> Calibration | None:
-        """The last calibrated values logged at or before t_ns; None before the first one."""
+        """The last calibrated values logged at or before t_ns; None before the first one, and None after
+        a calibration message that invalidates it (until the next calibrated one)."""
         if len(self._calibration_times) != len(self.calibrations):
             self._calibration_times = [c.t_ns for c in self.calibrations]
         position = bisect.bisect_right(self._calibration_times, t_ns)
-        return self.calibrations[position - 1] if position else None
+        if not position:
+            return None
+        calibration = self.calibrations[position - 1]
+        reset = bisect.bisect_right(self.calibration_resets, t_ns)
+        if reset and self.calibration_resets[reset - 1] > calibration.t_ns:
+            return None
+        return calibration
 
     def motion_at(self, t_ns: int, max_age_ns: int = MAX_MOTION_AGE_NS) -> Motion | None:
         """The last motion sample at or before t_ns, if not older than max_age_ns."""
@@ -120,6 +130,8 @@ def read_events(events: Iterable) -> CommaLog:
             calibration = _calibration(event, getattr(event, which))
             if calibration is not None:
                 log.calibrations.append(calibration)
+            else:
+                log.calibration_resets.append(int(event.logMonoTime))
         elif which == CAR_STATE_STREAM and event.valid:
             log.car_states.append((int(event.logMonoTime), event.carState))
         elif which == MOTION_STREAM:
@@ -129,6 +141,7 @@ def read_events(events: Iterable) -> CommaLog:
     for frames in log.frames.values():
         frames.sort(key=lambda frame: frame.index)
     log.calibrations.sort(key=lambda calibration: calibration.t_ns)
+    log.calibration_resets.sort()
     log.motion.sort(key=lambda motion: motion.t_ns)
     return log
 

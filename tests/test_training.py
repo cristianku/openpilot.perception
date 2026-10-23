@@ -5,7 +5,7 @@ import unittest
 import numpy as np
 
 from perception.association import Association, Detection
-from perception.metrics import DistanceErrors
+from perception.metrics import DistanceErrors, band_of
 from perception.provenance import Provenance
 from perception.radar.oem_lead import OemLeadSample
 from perception.viz import object_rows, table
@@ -50,15 +50,39 @@ class Metrics(unittest.TestCase):
         self.assertTrue(errors.add(32.0, 30.0, Provenance.OEM_RADAR, associated=True))
         self.assertTrue(errors.add(18.0, 20.0, Provenance.OEM_RADAR, associated=True))
         self.assertFalse(errors.add(99.0, 30.0, Provenance.OEM_RADAR, associated=False))
-        self.assertFalse(errors.add(math.nan, 30.0, Provenance.OEM_RADAR, associated=True))
+        self.assertFalse(errors.add(30.0, math.nan, Provenance.OEM_RADAR, associated=True))  # no label
         self.assertTrue(errors.add(50.0, 10.0, Provenance.SYNTHETIC, associated=True))
         measured = errors.measured()
-        self.assertEqual(measured['count'], 2)
-        self.assertAlmostEqual(measured['abs_mean_m'], 2.0)
-        self.assertAlmostEqual(measured['rel_mean'], (2 / 30 + 2 / 20) / 2)
-        self.assertEqual(errors.summary()['synthetic']['count'], 1)
-        self.assertEqual(set(errors.scalars()), {'distance/count', 'distance/abs_mean_m', 'distance/abs_median_m',
-                                                 'distance/rel_mean', 'distance/rel_median'})
+        self.assertEqual((measured['eligible'], measured['predicted'], measured['missing']), (2, 2, 0))
+        self.assertAlmostEqual(measured['mae_m'], 2.0)
+        self.assertAlmostEqual(measured['absrel'], (2 / 30 + 2 / 20) / 2)
+        self.assertAlmostEqual(measured['rmse_m'], 2.0)
+        self.assertEqual(errors.summary()['synthetic']['eligible'], 1)
+        self.assertIn('distance/mae_m', errors.scalars())
+        self.assertIn('distance/10-30 m/within_2m', errors.scalars())
+
+    def test_a_missing_prediction_is_a_failure_not_dropped(self):
+        # review 2, I2: one good and one NaN prediction on two eligible labels
+        errors = DistanceErrors()
+        errors.add(31.0, 30.0, Provenance.OEM_RADAR, associated=True)
+        errors.add(math.nan, 25.0, Provenance.OEM_RADAR, associated=True)
+        errors.add(None, 40.0, Provenance.OEM_RADAR, associated=True)
+        measured = errors.measured()
+        self.assertEqual((measured['eligible'], measured['predicted'], measured['missing']), (3, 1, 2))
+        self.assertAlmostEqual(measured['mae_m'], 1.0)            # over the predicted one
+        self.assertAlmostEqual(measured['within_1m'], 1 / 3)      # over all the eligible labels
+        self.assertAlmostEqual(measured['within_5m'], 1 / 3)
+
+    def test_disjoint_bands(self):
+        self.assertEqual([band_of(x) for x in (1.9, 2.0, 9.99, 10.0, 59.9, 60.0, 80.0, 80.1)],
+                         ['out of range', '2-10 m', '2-10 m', '10-30 m', '30-60 m', '60-80 m', '60-80 m',
+                          'out of range'])
+        errors = DistanceErrors()
+        errors.add(9.0, 8.0, Provenance.OEM_RADAR, associated=True)
+        errors.add(70.0, 65.0, Provenance.OEM_RADAR, associated=True)
+        bands = errors.measured()['bands']
+        self.assertEqual(set(bands), {'2-10 m', '60-80 m'})
+        self.assertAlmostEqual(bands['60-80 m']['mae_m'], 5.0)
 
     def test_synthetic_only_has_no_headline(self):
         errors = DistanceErrors()

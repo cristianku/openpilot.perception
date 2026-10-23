@@ -63,6 +63,13 @@ the last one logged before the frame; before the first one a frame has none and 
 
 ## Pairing the radar with a detection
 
+> **Status: known bias, not yet replaced.** The rule below admits a pair only when the vision distance of
+> the detection is within a gate of the radar, and takes the lateral position from the vision estimate too:
+> training and metrics then favour the cases where the model was already right (review 1, C1). A pairing
+> that uses no depth of the model under test is planned ([review decisions](review-decisions.md)); until
+> then these pairs are not a reference for evaluation.
+
+
 The radar is an extra check, used only for the object straight ahead in the ego lane: one target is
 not a 3D map, and nothing beside the car or in another lane ever gets its distance. It labels a
 detection ([`perception/association.py`](../perception/association.py)) only when, in openpilot's

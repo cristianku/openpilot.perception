@@ -39,11 +39,29 @@ class Calibrations(unittest.TestCase):
         ]
         log = comma_log.read_events(events)
         self.assertIsNone(log.calibration_at(S + S // 2))
-        self.assertEqual(log.calibration_at(S + 2 * S).rpy_calib, (0.0, 0.02, 0.01))
-        self.assertAlmostEqual(log.calibration_at(S + 2 * S).height_m, 1.22)
+        self.assertEqual(log.calibration_at(S + 2 * S - 1).rpy_calib, (0.0, 0.02, 0.01))
+        self.assertAlmostEqual(log.calibration_at(S + 2 * S - 1).height_m, 1.22)
+        self.assertIsNone(log.calibration_at(S + 2 * S))      # the not-finite message ends it
         latest = log.calibration_at(S + 10 * S)
         self.assertEqual(latest.rpy_calib, (0.0, 0.03, 0.01))
         self.assertIsNone(latest.height_m)
+
+
+class CalibrationInvalidation(unittest.TestCase):
+    def test_an_uncalibrated_message_ends_the_calibration(self):
+        # calibrated@100 -> uncalibrated@200 -> frame@300: no calibration (review 2, I1)
+        log = comma_log.read_events([calibration(100 * S), calibration(200 * S, status='uncalibrated'),
+                                     calibration(400 * S, rpy=(0.0, 0.01, 0.0))])
+        self.assertIsNotNone(log.calibration_at(150 * S))
+        self.assertIsNone(log.calibration_at(300 * S))
+        self.assertEqual(log.calibration_at(500 * S).rpy_calib, (0.0, 0.01, 0.0))
+
+    def test_invalid_or_not_finite_messages_end_it_too(self):
+        log = comma_log.read_events([calibration(100 * S), calibration(200 * S, valid=False),
+                                     calibration(300 * S), calibration(400 * S, rpy=(0.0, math.nan, 0.0))])
+        self.assertIsNone(log.calibration_at(250 * S))
+        self.assertIsNotNone(log.calibration_at(350 * S))
+        self.assertIsNone(log.calibration_at(450 * S))
 
 
 class Motion(unittest.TestCase):
