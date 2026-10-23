@@ -14,6 +14,36 @@ connected to vehicle control.
 **Status: early.** Data path, labels, loss, metrics and display exist; the vision model does not
 yet.
 
+## Site
+
+perception-web is the control site of this repository: the state of the plan, the experiments
+started as guided wizards, their results in plain words and numbers, the depth pictures. It runs on
+the server next to openpilot.distill and reads the drives that openpilot.distill downloaded and
+localized there.
+
+```bash
+git clone https://github.com/cristianku/openpilot.perception.git
+cd openpilot.perception
+sudo ./install.sh        # --dry-run first to see what it does
+```
+
+The installer sets up everything (system packages, uv, the CUDA 12 build of torch on a Tesla
+V100, the Python environment, the depth model of Experiment 1 and the systemd service
+`perception-web` on port 8767). It prints the address and, until the administrator exists, the
+setup code of the first visit. Everything else is done from the page: Settings (the gear at the
+bottom) chooses the drives, the code update pulls the latest version and restarts the site. To start
+it by hand instead: `web/run.sh`.
+
+| Where | What |
+| --- | --- |
+| [`web/server.py`](web/server.py) | The HTTP server (standard library): sign-in wall, same-origin JSON POSTs, strict CSP. |
+| [`web/actions.py`](web/actions.py), [`web/jobs.py`](web/jobs.py) | What the site can start, and the background jobs (they survive a restart of the site). |
+| [`web/status.py`](web/status.py), [`web/settings.py`](web/settings.py) | Machine, GPU lock, drives found on the server, results. |
+| [`tasks/update.py`](tasks/update.py) | The code update of the site. |
+| [`install.sh`](install.sh), [`deploy/`](deploy/) | The all-in-one installer and the systemd service. |
+
+Results stay on the server, in `outputs/experiments/<job id>/` (not in git).
+
 | Where | What |
 | --- | --- |
 | [`perception/sources/comma_log.py`](perception/sources/comma_log.py) | Frames of `fcamera.hevc` / `ecamera.hevc` with monotonic times, calibration over time, car motion (`deviceMotion`), `carState`. |
@@ -26,7 +56,8 @@ yet.
 
 ## Use
 
-Python 3.12 (`>=3.12.3,<3.13`, as openpilot.distill). Reading an rlog needs openpilot's
+Python 3.12 (`>=3.12.3,<3.13`, as openpilot.distill). `uv sync` (with `--extra v100` on a Tesla
+V100) gives the environment of the site and the experiments. Reading an rlog needs openpilot's
 `LogReader`, which the openpilot.distill environment provides.
 
 From openpilot.distill (submodule checked out):
@@ -49,8 +80,11 @@ target, valid, association = depth_targets(sample, detections, AssociationConfig
 Tests, from the root of this repository (synthetic data only):
 
 ```bash
-python -m unittest discover -s tests
+.venv/bin/python -m unittest discover -s tests
 ```
+
+(Not `uv run`: without `--extra v100` it would put the default CUDA 13 torch back, which has no V100
+kernels.)
 
 ## Data
 

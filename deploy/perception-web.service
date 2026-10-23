@@ -1,0 +1,38 @@
+# systemd unit of perception-web, the control site of openpilot.perception (python -m web.server).
+#
+# Do not copy this file by hand: deploy/install_web_service.sh fills in the two placeholders
+# (the path of the clone and the token file, /etc/perception-web.env) and installs the result as
+# /etc/systemd/system/perception-web.service.
+#
+# User=root is acceptable on the dedicated LXC: the experiments read the drives of openpilot.distill
+# (also root's) and use the GPU. To run it as another account: create it, give it the clone
+# (chown -R <user>: <repo>) and read access to the drives, set User= and Group= below and the PATH to its
+# ~/.local/bin, run the install script again and make the token file readable by that account only.
+
+[Unit]
+Description=perception-web: control site of openpilot.perception
+Documentation=file://__PERCEPTION_REPO__/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=__PERCEPTION_REPO__
+# PERCEPTION_WEB_TOKEN (the setup code of the first visit) comes from this file, mode 600.
+EnvironmentFile=__PERCEPTION_ENV_FILE__
+# uv lives in /root/.local/bin: the code update (tasks/update.py) needs it.
+Environment=PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+Environment=PYTHONUNBUFFERED=1
+ExecStart=__PERCEPTION_REPO__/.venv/bin/python -m web.server --host 0.0.0.0 --port 8767
+Restart=on-failure
+RestartSec=5
+# Stop/restart only the web server: an experiment started from the site keeps running and
+# the site finds it again after the restart (tasks/update.py restarts the service).
+KillMode=process
+NoNewPrivileges=yes
+# A private /tmp is deleted on restart under the jobs that survive it.
+PrivateTmp=no
+
+[Install]
+WantedBy=multi-user.target

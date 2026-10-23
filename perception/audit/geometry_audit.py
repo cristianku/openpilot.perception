@@ -336,16 +336,19 @@ def main(arguments: list[str]) -> int:
     segments = []
     with ProcessPoolExecutor(max_workers=max(1, options.jobs)) as pool:
         futures = {folder: pool.submit(_audit_one, folder, options.k, options.stride) for folder in options.segments}
-        for folder, future in futures.items():
+        for done, (folder, future) in enumerate(futures.items(), start=1):
             segment, problem = future.result()
             if segment is None:
                 print(f'{folder.name}: skipped ({problem})', flush=True)
             else:
                 segments.append(segment)
                 print(f'{folder.name}: {len(segment["pairs"])} triplets', flush=True)
+            # Read by the site (web/jobs.py) for its progress bar.
+            print(f'PROGRESS {done}/{len(futures)}', flush=True)
     report = {'summary': summarize(segments), 'segments': segments}
     print(json.dumps(report['summary'], indent=1))
     if options.out:
+        options.out.parent.mkdir(parents=True, exist_ok=True)
         options.out.write_text(json.dumps(report, indent=1))
     return 0
 

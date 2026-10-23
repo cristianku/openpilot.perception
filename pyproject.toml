@@ -5,26 +5,44 @@ description = "3D object perception from comma road video, with metric supervisi
 readme = "README.md"
 requires-python = ">=3.12.3,<3.13"
 license = {text = "MIT"}
+# Everything the site (web/) and the experiments need. Reading an rlog (perception.sources.comma_log)
+# needs openpilot's LogReader too, which the openpilot.distill environment provides.
 dependencies = [
+  "huggingface-hub",
   "numpy>=2.0",
-  "torch",
+  "opencv-python-headless",
+  "safetensors",
+  "torch==2.13.0",
 ]
 
 [project.optional-dependencies]
-# Drawing the objects on a frame (perception.viz.draw).
-viz = ["opencv-python-headless"]
-# The geometry audit (perception.audit.geometry_audit); it also needs ffmpeg on the PATH.
-audit = ["opencv-python-headless", "safetensors"]
-# The frozen monocular baseline (perception.experiments.mono_baseline): weights from Hugging Face.
-baseline = ["opencv-python-headless", "safetensors", "huggingface-hub"]
+# Tesla V100 / Volta (sm_70): `uv sync --extra v100`. The default PyPI torch is built for CUDA 13, which
+# dropped Volta; the cu126 builds still ship sm_70 kernels. install.sh writes PERCEPTION_UV_EXTRA=v100 in
+# the .env of the clone when it finds such a GPU, and tasks/update.py syncs with it.
+v100 = ["torch==2.13.0"]
+# The default CUDA 13 stack. Empty: it only exists because a conflict set needs two entries.
+cuda13 = []
 
 [dependency-groups]
 dev = [
+  # The tests build carState schemas of several versions (tests/fixtures), as openpilot's logs use them.
+  "pycapnp==2.1.0",
   "ruff>=0.11",
 ]
 
 [tool.uv]
 package = false
+# Without this conflict uv merges the extra-scoped source into the default resolution.
+conflicts = [[{ extra = "v100" }, { extra = "cuda13" }]]
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+# Applied only with the v100 extra, on Linux.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu126", extra = "v100", marker = "sys_platform == 'linux'" }]
 
 [tool.ruff]
 line-length = 120

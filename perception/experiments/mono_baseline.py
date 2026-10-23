@@ -168,15 +168,18 @@ def main(arguments: list[str]) -> int:
 
     model = da.load(options.device)
     segments = []
-    for folder in options.segments:
+    for done, folder in enumerate(options.segments, start=1):
         try:
             segments.append(segment_pairs(folder, model, options.pictures))
             print(f'{folder.name}: {len(segments[-1]["points"])} reference points', flush=True)
         except (OSError, ValueError) as exception:
             print(f'{folder.name}: skipped ({exception})', flush=True)
+        # Read by the site (web/jobs.py) for its progress bar.
+        print(f'PROGRESS {done}/{len(options.segments)}', flush=True)
     report = {'summary': summarize(segments), 'segments': segments}
     print(json.dumps(report['summary'], indent=1))
     if options.out:
+        options.out.parent.mkdir(parents=True, exist_ok=True)
         options.out.write_text(json.dumps(report))
     return 0
 

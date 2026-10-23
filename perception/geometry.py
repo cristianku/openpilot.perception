@@ -14,15 +14,15 @@ OPENPILOT_RADAR_TO_CAMERA_M = 1.52
 def calibrated_from_camera(camera: str, rpy_calib, wide_from_device_euler) -> np.ndarray:
     """3x3 rotation from the axes of `camera` ('fcamera' or 'ecamera', device-frame axes) to the
     calibrated frame."""
+    if camera not in ('fcamera', 'ecamera'):
+        raise ValueError(f'unknown camera {camera!r}: fcamera or ecamera')
     from openpilot.common.transformations.orientation import rot_from_euler
 
     calibrated_from_device = np.asarray(rot_from_euler(list(rpy_calib))).T
     if camera == 'fcamera':
         return calibrated_from_device
-    if camera == 'ecamera':
-        wide_from_device = np.asarray(rot_from_euler(list(wide_from_device_euler)))
-        return calibrated_from_device @ wide_from_device.T
-    raise ValueError(f'unknown camera {camera!r}: fcamera or ecamera')
+    wide_from_device = np.asarray(rot_from_euler(list(wide_from_device_euler)))
+    return calibrated_from_device @ wide_from_device.T
 
 
 def to_calibrated(points, camera: str, rpy_calib, wide_from_device_euler) -> np.ndarray:
