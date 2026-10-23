@@ -125,16 +125,19 @@ class Status(unittest.TestCase):
         self.assertEqual(set(test), TEST_KEYS)
         self.assertEqual((test['recording_number'], test['target'], test['correction_m'], test['kept']),
                          (0x134, 'wall', -0.93, True))
-        # Saved before the target existed: a wall.
-        stored = json.loads(self.tests.path.read_text())
-        del stored[0]['target']
-        self.tests.path.write_text(json.dumps(stored))
-        self.assertEqual(self.tests.summary()['tests'][0]['target'], 'wall')
-        # An entry edited by hand without its numbers is skipped, and kept through later writes.
-        self.tests.path.write_text(json.dumps([*stored, {'id': 'broken', 'note': 'by hand'}]))
-        self.tests.change(stored[0]['id'], {'kept': False})
-        self.assertEqual(json.loads(self.tests.path.read_text())[-1], {'id': 'broken', 'note': 'by hand'})
-        self.assertEqual(len(self.tests.summary()['tests']), 1)
+        # Saved by an earlier version (radar_tests.json, imported into the store) before the target existed: a
+        # wall. An entry edited by hand without its numbers is skipped, and kept in the renamed file.
+        old = {'id': 'aaaaaaaaaaaa', 'segment': WALL2, 'route': WALL2[:20], 'from_s': 2.5, 'to_s': 20.0,
+               'reading_m': 1.75, 'tape_radar_m': 0.9, 'tape_comma_m': 2.4, 'kept': True, 'created': 1.5e9}
+        self.tests.path.write_text(json.dumps([old, {'id': 'broken', 'note': 'by hand'}]))
+        tests = self.tests.summary()['tests']
+        self.assertEqual([(t['id'], t['target'], t['correction_m']) for t in tests],
+                         [(test['id'], 'wall', -0.93), ('aaaaaaaaaaaa', 'wall', -0.85)])
+        self.assertFalse(self.tests.path.exists())
+        imported = self.tests.path.with_name('radar_tests.json.imported')
+        self.assertEqual(json.loads(imported.read_text())[-1], {'id': 'broken', 'note': 'by hand'})
+        self.tests.change('aaaaaaaaaaaa', {'kept': False})
+        self.assertEqual([t['kept'] for t in self.tests.summary()['tests']], [True, False])
 
     def test_refused_tests(self):
         for body in ({'segment': WALL, 'standstill': 0, 'tape_radar_m': 1.32, 'tape_comma_m': 2.82, 'target': 'tree'},
@@ -198,7 +201,9 @@ class History(unittest.TestCase):
         self.assertEqual((history[0]['radar_to_camera_m'], history[0]['radar_correction_m']), (1.5, -0.89))
         self.assertEqual((history[3]['radar_to_camera_m'], history[3]['radar_correction_m']), (1.5, -0.9))
         self.assertEqual((history[4]['radar_to_camera_m'], history[4]['radar_correction_m']), (None, 0.0))
-        self.assertEqual(self.settings.history_path.stat().st_mode & 0o777, 0o600)
+        # In the store (outputs/web/perception.sqlite), no longer in radar_calibrations.json.
+        self.assertFalse(self.settings.history_path.exists())
+        self.assertEqual(self.settings.store.path.stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.settings.path.stat().st_mode & 0o777, 0o600)
 
     def test_an_unreadable_history_is_never_written_over(self):
@@ -318,12 +323,14 @@ class DamagedFiles(unittest.TestCase):
     def test_bad_entries_are_skipped(self):
         good = self.app.add_radar_test({'segment': WALL, 'standstill': 0, 'tape_radar_m': 1.32,
                                         'tape_comma_m': 2.82})['test']
+        # Files of an earlier version, imported at their first use: json.loads reads NaN, as a number it is
+        # skipped, as a date it is left out; an entry already in the store (the same id) is skipped.
         path = self.app.radar_tests.path
-        stored = json.loads(path.read_text())
-        bad_route = dict(stored[0], id='bbbbbbbbbbbb', route='zz')
-        # json.loads reads NaN: as a number it is skipped, as a date it is left out.
-        text = json.dumps([dict(stored[0], created=float('nan')), bad_route,
-                           dict(stored[0], id='cccccccccccc', reading_m=float('nan'))])
+        stored = {key: good[key] for key in ('id', 'segment', 'route', 'target', 'from_s', 'to_s', 'reading_m',
+                                             'tape_radar_m', 'tape_comma_m', 'kept', 'created')}
+        bad_route = dict(stored, id='bbbbbbbbbbbb', route='zz')
+        text = json.dumps([dict(stored, id='aaaaaaaaaaaa', created=float('nan')), bad_route,
+                           dict(stored, id='cccccccccccc', reading_m=float('nan')), dict(stored, kept=False)])
         self.assertIn('NaN', text)
         path.write_text(text)
         drafts = self.app.radar_drafts.path
@@ -334,8 +341,9 @@ class DamagedFiles(unittest.TestCase):
         json.dumps(status, allow_nan=False)
         radar = self.app.radar_payload()
         json.dumps(radar, allow_nan=False)
-        self.assertEqual([test['id'] for test in radar['tests']['tests']], [good['id']])
-        self.assertIsNone(radar['tests']['tests'][0]['created'])
+        self.assertEqual([(test['id'], test['kept']) for test in radar['tests']['tests']],
+                         [(good['id'], True), ('aaaaaaaaaaaa', True)])
+        self.assertIsNone(radar['tests']['tests'][1]['created'])
         self.assertEqual([(d['id'], d['created']) for d in radar['drafts']], [('eeeeeeeeeeee', None)])
         self.assertEqual(status['next']['case'], 'test_waiting')
 
@@ -383,12 +391,13 @@ class Drafts(unittest.TestCase):
         with self.assertRaises(WebError) as gone:
             self.drafts.change(made[0]['id'], {'delete': True})
         self.assertEqual(gone.exception.status, 404)
-        self.assertEqual(self.drafts.path.stat().st_mode & 0o777, 0o600)
-        # One edited by hand is skipped (not counted), and kept.
-        stored = json.loads(self.drafts.path.read_text())
-        self.drafts.path.write_text(json.dumps([{'id': 'broken'}, *stored]))
+        self.assertEqual(self.drafts.store.path.stat().st_mode & 0o777, 0o600)
+        # One edited by hand in a file of an earlier version is skipped (not counted), and kept in the renamed file.
+        self.drafts.path.write_text(json.dumps([{'id': 'broken'}]))
         self.drafts.change(made[1]['id'], {'delete': True})
-        self.assertEqual(json.loads(self.drafts.path.read_text())[0], {'id': 'broken'})
+        self.assertEqual(len(self.drafts.drafts()), MAX_DRAFTS - 2)
+        imported = self.drafts.path.with_name('radar_drafts.json.imported')
+        self.assertEqual(json.loads(imported.read_text()), [{'id': 'broken'}])
         # marker_counter may be left out: the comma was not reachable.
         self.assertIsNone(self.drafts.add({'target': 'car', 'tape_radar_m': 10.0, 'tape_comma_m': 11.5})
                           ['marker_counter'])

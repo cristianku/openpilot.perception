@@ -18,7 +18,9 @@ is [`app/comma_listener.py`](../comma_listener.py), read-only, while a radar scr
    - *Connect this phone to your comma*: the app makes its own Ed25519 SSH key; the private key never leaves the
      phone (encrypted with an AES-256-GCM key of the Android Keystore, usable without unlocking so the radar works
      with the phone in a car holder). The comma gets the public key with **one tap** (the best way:
-     `POST /api/app/v1/comma-key`, the site adds it, at home, when the owner allows it) or through **GitHub**:
+     `POST /api/app/v1/comma-key`, the site adds it, at home, when the owner allows it: just before the tap, in
+     the site's Settings › Perception for Android › *Let the app add phones to the comma*, with the
+     administrator's password, for one phone and 10 minutes; `web/API.md`) or through **GitHub**:
      copy the key, add it at github.com/settings/ssh/new, then on the comma (the comma four's mici menus, with
      internet) *settings › developer › SSH keys*: tap it, keep the GitHub username, confirm; the comma downloads
      the GitHub keys again, now with the phone's. Then *delete the key from GitHub*: while it is there it can push
@@ -112,26 +114,117 @@ the app logs nothing (no logger is bundled for sshj's SLF4J). Only the launcher 
 On the server, never by GitHub:
 
 ```bash
-helpers/build_android.sh              # unit tests, Android lint, signed release APK
-helpers/build_android.sh --no-lint    # quicker
+helpers/build_android.sh --no-play    # unit tests, Android lint, signed release APK and AAB
+helpers/build_android.sh --no-lint    # quicker (and Google Play as below)
 helpers/build_android.sh --setup-only # tools and signing key only
 ```
 
 It sets up what is missing (JDK 17, Android SDK platform 36 and build-tools 35, Gradle 8.14.3 and its cache in
 `/opt/android`, shared with openpilot.distill's app), every download pinned (the Temurin 17.0.21+9 JDK, the
 command-line tools and Gradle by a SHA-256 written in the script, the SDK packages by sdkmanager's checksums, every
-Maven artifact by Gradle's dependency verification in `gradle/verification-metadata.xml`; after changing a
-dependency on purpose, `helpers/build_android.sh --update-verification` writes it again: review its diff), and the
-signing key of the server, the same as openpilot.distill's app (the owner's one upload key for Google Play), in
-`~/.config/distill-android/` (`distill-release.p12`, PKCS12, alias `distill`, made once by whichever app is built
-first, never in git, never printed; **keep a backup**: a phone installs an update only with the same key). Output: `outputs/android/perception-android-<version>.apk`
-(the last 3 are kept) and `outputs/android/latest.json` (`version`, `version_code`, `file`, `size`, `sha256`,
-`built`, `commit`). Version `0.1.<commits of HEAD>`, versionCode `1000 + <commits>`, `-dev` when `app/` has local
-changes. A release without the server's key stops: it is never signed with a debug key.
+Maven artifact, Gradle Play Publisher too, by Gradle's dependency verification in `gradle/verification-metadata.xml`;
+after changing a dependency or a plugin on purpose, `helpers/build_android.sh --update-verification` writes it again:
+review its diff), and the signing key of the server, the same as openpilot.distill's app (the owner's one upload key
+for Google Play), in `~/.config/distill-android/` (`distill-release.p12`, PKCS12, alias `distill`, made once by
+whichever app is built first, never in git, never printed; **keep a backup**: a phone installs an update only with
+the same key). Both outputs are checked before they are offered: the APK with `apksigner` (APK Signature Scheme
+v2), the AAB with `jarsigner -verify`, and both must carry the same certificate. Output:
+`outputs/android/perception-android-<version>.apk` and `.aab` (the last 3 of each are kept) and
+`outputs/android/latest.json` (`version`, `version_code`, `file`, `size`, `sha256`, `aab`, `aab_size`,
+`aab_sha256`, `built`, `commit`). Version `0.1.<commits of HEAD>`, versionCode `1000 + <commits>`, `-dev` when
+`app/` has local changes. A release without the server's key stops: it is never signed with a debug key. One build
+at a time: a second one waits for the first (`outputs/android/.build.lock`).
+
+`install.sh` builds it (`--no-play`, step 7; `--no-android` skips it); the code update of the site
+(`tasks/update.py`) restarts the site first, then builds it again when `app/` or `helpers/build_android.sh` changed,
+the server has no APK and AAB yet, the last build is not the one of the code (made with local changes, or before a
+commit that changed `app/`) or, with the key of the Play service account on the server, the last build is not on
+Google Play yet (no tag `perception-android-v<version>` here or on GitHub), and publishes it on Google Play as below.
+A build that takes more than 45 minutes is ended, Gradle with it. A failed build is only a warning for both: the
+site does not need the app.
 
 Toolchain pinned as openpilot.distill's app: Android Gradle Plugin 8.13.2, Kotlin 2.2.21, Compose BOM 2025.12.01,
-`compileSdk`/`targetSdk` 36, `minSdk` 26. No wrapper jar is committed; by hand, with the tools of `/opt/android`:
-`gradle :app:testDebugUnitTest :app:lintRelease :app:assembleDebug` in `app/android`.
+Gradle Play Publisher 3.12.1, `compileSdk`/`targetSdk` 36, `minSdk` 26. No wrapper jar is committed; by hand, with
+the tools of `/opt/android`: `gradle :app:testDebugUnitTest :app:lintRelease :app:assembleDebug` in `app/android`.
+
+## Google Play
+
+The app is **Openpilot Perception** on Google Play, package `ch.bodhi.perception` (permanent), in the owner's
+developer account (14 Bodhi) next to Openpilot Distill. Everything goes from the server: `helpers/build_android.sh`
+builds, signs and publishes with Gradle Play Publisher (`com.github.triplet.play`, the `play {}` block of
+`app/build.gradle.kts`); nothing is built or published by GitHub.
+
+| | |
+| --- | --- |
+| Package | `ch.bodhi.perception` |
+| Version | `0.1.<commits of HEAD>`, versionCode `1000 + <commits>`: every commit has its own, always higher |
+| Upload key | the key of the server, `~/.config/distill-android/distill-release.p12`, the same as Openpilot Distill's (certificate SHA-256 `9F:B4:E3:74:…:BA:0F`, printed by every build) |
+| App signing key | generated and kept by Google (Play App Signing) |
+| Service account key | `~/.config/distill-android/play-service-account.json`, the same file as Openpilot Distill's (never in git, `chmod 600`) |
+| Track | internal testing (the testers are set in Play Console) |
+| Tags | `perception-android-v<version>`, pushed to GitHub (never `android-v`, the tags of openpilot.distill) |
+
+**Every build publishes** by itself, on the internal track (no review): the AAB with its R8 mapping (inside the
+bundle), then the tag `perception-android-v<version>` on the commit it was built from. It does so only when the key
+of the service account is on the server, `app/` has no local changes, HEAD is the same commit as on GitHub
+(`origin`), neither changed while Gradle built (other sessions work in this clone: such a build becomes `-dev`) and
+the version has no tag yet (it is not on Google Play); otherwise it says why not, and a failed upload is a warning
+(the APK of the site is built all the same). Google Play gets the very bundle whose signature the script checked:
+Gradle Play Publisher is given its folder (`-PperceptionPlayArtifactDir`) and builds nothing again.
+
+```bash
+helpers/build_android.sh                  # build, then the internal track when it can
+helpers/build_android.sh --play-dry-run   # the same, but nothing is committed on Google Play and no tag
+helpers/build_android.sh --play=alpha     # closed testing: promotes the version already on internal
+helpers/build_android.sh --play=production
+```
+
+With `--play=TRACK` every problem is an error, and a version already on Google Play is promoted from the internal
+track. `--play-dry-run` reports the checks above and uploads the AAB into an edit of Google Play that Google
+validates and that is never committed (`--no-commit`); the script then drops the edit that Gradle Play Publisher
+saves in `app/build/gpp`, so a later real run never commits it. `--listing` uploads the store listing of
+`app/src/main/play/listings/`: there is none in the repository yet (texts and pictures are edited in Play Console),
+so it refuses.
+
+**The first version goes by hand.** Google takes the first version of a new app only from Play Console. When
+Google Play answers that it has no application `ch.bodhi.perception` (`No application found for the package
+name`), the script says so and which bundle to use:
+
+> upload outputs/android/perception-android-&lt;version&gt;.aab by hand in Play Console > Internal testing > Create
+> release; from the next version on this script uploads by itself
+
+The name of the last bundle is in `outputs/android/latest.json` (field `aab`); to the PC with
+`scp root@<server>:/root/openpilot.perception/outputs/android/perception-android-<version>.aab .`. At that first
+upload Play asks how to sign the app: keep the **Google-generated key** (Play App Signing); the key of the server
+becomes the upload key (App integrity shows the certificate the build printed). Then save and roll out to the
+internal testers. If the script later builds the same version again, Google answers that its version code is used:
+the script takes it as on Google Play and tags it.
+
+**Once, by the owner**, in Play Console:
+
+1. Users and permissions › the service account (the one of `play-service-account.json`) › App permissions › add
+   Openpilot Perception with "Release to testing tracks" and "Manage testing tracks" (and "Manage store presence"
+   for `--listing`). `helpers/build_android.sh --play-dry-run` shows whether it is in place.
+2. The first version by hand, as above, when the script asks for it.
+3. Policy › App content (privacy policy, app access, ads, content rating, target audience, data safety), as the
+   Dashboard of the app asks for it. What the app sends: the administrator's name and password at
+   sign-in and then its session, the tape tests and the phone's SSH public key, to the owner's own site only; the
+   SSH connection to the owner's comma; nothing to the developer, no analytics, no ads.
+
+| Answer of Google Play | Meaning | Remedy |
+| --- | --- | --- |
+| `No application found for the package name` | no version of the app yet | the first upload by hand, as the script says |
+| `403 The caller does not have permission` | the service account has no permission on the app | step 1 |
+| `Only releases with status draft may be created on draft app` | the set-up of the app is not finished | roll out the first release, finish the Dashboard of Play Console |
+| `Version code … has already been used` | that version is on Google Play (uploaded by hand) | none: the script tags it; the next commit gets a new one |
+
+Back up `~/.config/distill-android/` (the key, its password, the key of the service account) outside the server. A
+lost upload key can be replaced through Play Console (App integrity › Request upload key reset); the APKs of the
+site would then be signed with a new key, and the phones that installed one from there would have to uninstall it
+once. An APK from the site and the app from Google Play (signed by Google) cannot update each other: remove one
+before installing the other. Removing the app deletes the tests still on the phone (its queue is in the app's own
+files, never backed up) and its SSH key: first let it send its tests to the site, and add the phone to the comma
+again afterwards. Settings › Perception for Android on the site says so next to the two buttons.
 
 ## Tests
 
@@ -156,6 +249,8 @@ PERCEPTION_SSH_IT_FINGERPRINT=SHA256:… gradle :app:testDebugUnitTest --tests '
 | AndroidX, Jetpack Compose, Material 3, Guava ListenableFuture 1.0 | Apache-2.0 |
 | Kotlin, kotlinx.coroutines, JetBrains annotations 23.0.0, JSpecify 1.0.0 | Apache-2.0 |
 | JUnit 4.13.2, org.json 20240303 (tests only, not in the app) | EPL-1.0, public domain |
+| Gradle Play Publisher 3.12.1 and the Google API client libraries (the upload to Google Play only, not in the app) | MIT, Apache-2.0 |
 
 The full texts the licences ask to ship (the Bouncy Castle and SLF4J notices, sshj's NOTICE, Apache-2.0) are in
-the APK, `app/src/main/assets/third_party_licences.txt`, shown in Settings › Licences.
+the APK, `app/src/main/assets/third_party_licences.txt`, shown in Settings › Licences; the repository's
+[`THIRD_PARTY.md`](../../THIRD_PARTY.md) lists them too, with the tools of the build.

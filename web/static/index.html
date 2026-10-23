@@ -239,7 +239,7 @@
     <header class="page-head">
       <button class="icon-btn wizard-back" type="button" id="settings-back" aria-label="Back"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M12.5 4.5 7 10l5.5 5.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg></button>
       <h2 class="wizard-title" id="settings-title">Settings</h2>
-      <p class="wizard-sub">Where the drives come from, your car's radar, your sign-in, how the site looks.</p>
+      <p class="wizard-sub">Where the drives come from, your car's radar, the app for your phone, your sign-in, how the site looks.</p>
     </header>
     <div class="card">
       <h2 id="sources-title">Drives</h2>
@@ -251,6 +251,37 @@
       <div class="card-head"><h2>Your car's radar</h2><span id="cal-pill"></span></div>
       <p class="lead">The radar measures from the front of the car, the comma from the windshield. Two numbers turn a radar reading into a distance from the comma. A tape measure and a wall are enough: the test shows how.</p>
       <div id="cal-body"><span class="skeleton-line"></span></div>
+    </div>
+    <div class="card" id="android-card">
+      <h2>Perception for Android</h2>
+      <div class="account-row">
+        <span class="account-badge android" aria-hidden="true"><svg viewBox="0 0 20 20"><rect x="5" y="2" width="10" height="16" rx="2.5" stroke="currentColor" stroke-width="1.7" fill="none"/><path d="M8.5 15h3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></span>
+        <div class="grow"><div class="account-title">The app for your phone</div><div class="account-sub" id="android-sub">Checking…</div></div>
+      </div>
+      <p class="lead">The radar reading live and the tape test, in the garage too, without internet. Its tests come to this site when the phone is back home.</p>
+      <p class="note" id="android-note" hidden>Open this page on the phone and tap Download: the first time Android asks to allow installing apps from the browser.</p>
+      <div class="buttons">
+        <a class="btn primary" id="android-download" href="/download/android" download hidden>Download the app</a>
+        <a class="btn" id="android-play" href="https://play.google.com/apps/internaltest/4700859580640807099" target="_blank" rel="noopener noreferrer">Google Play internal test</a>
+        <a class="btn" id="android-bundle" href="/download/android/aab" download hidden>Bundle for Google Play</a>
+      </div>
+      <p class="note">The Google Play link works once the first version of the app has been uploaded to Play Console.</p>
+      <p class="note" id="android-channel">Pick one of the two for a phone: the app from Google Play and the one downloaded here cannot update each other. Switching means uninstalling the app, and that deletes the tests still on the phone and its key for the comma. So first let it send its tests to this site (the app's Tests tab shows the ones still on the phone), and add the phone to the comma again afterwards.</p>
+      <h3 class="cal-sub">Phones on the comma</h3>
+      <label class="switch"><input type="checkbox" id="app-comma-keys"><span class="switch-track"></span> Let the app add phones to the comma</label>
+      <p class="note" id="app-comma-keys-state">Off.</p>
+      <form class="admin-form" id="app-keys-form" novalidate hidden>
+        <input type="text" name="username" autocomplete="username" hidden>
+        <div class="form-grid wide">
+          <label class="field">Your password, to allow it<input type="password" id="app-keys-password" autocomplete="current-password" maxlength="256"></label>
+        </div>
+        <div class="buttons">
+          <div class="action"><button class="btn primary" type="submit" id="btn-app-keys-allow">Allow one phone</button><div class="reason" id="app-keys-reason" aria-live="polite"></div></div>
+          <button class="btn" type="button" id="btn-app-keys-cancel">Cancel</button>
+        </div>
+      </form>
+      <p class="note">It is the only thing the site ever writes on the comma, one line in its list of SSH keys. Turning this off takes no phone off the comma: a GitHub refresh on the comma (settings › developer › SSH keys) replaces the list with your GitHub keys.</p>
+      <ul class="checklist app-phones" id="app-phones" hidden></ul>
     </div>
     <div class="card" id="admin-card">
       <h2>Administrator</h2>

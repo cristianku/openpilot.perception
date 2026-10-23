@@ -12,6 +12,9 @@ HttpOnly, SameSite=Strict, and Secure when the page came over https (a reverse p
 POSTs are accepted only from the same origin, as JSON (an HTML form cannot send it), with a Content-Length
 and a small body. Pages carry a strict Content-Security-Policy with a nonce. The server never prints the
 setup code from the environment, and never logs request URLs.
+
+Perception for Android (app/android) uses the same session and protections through its own API, /api/app/v1
+(web/app_api.py, the contract in web/API.md), and downloads the app at /download/android.
 """
 from __future__ import annotations
 
@@ -22,6 +25,7 @@ import os
 import re
 import secrets
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -30,9 +34,12 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from web.actions import ACTIONS, SIZES, audit_jobs, build_job
+from web.app_api import (API_VERSION, NOT_ALLOWED, PERMISSION_SECONDS, PhoneKeys, android_build, android_view,
+                         app_calibration, app_test)
+from web.app_api import info as app_info
 from web.auth import SESSION_MAX_SECONDS, AdminAuth
 from web.common import REPO, WebError, render_problem, short_text, strict_json_loads
-from web.comma import Comma, comma_host
+from web.comma import Comma, comma_host, public_key_line
 from web.jobs import JOB_ID_RE, JobManager, describe
 from web.pictures import picture
 from web.radar import (DRAFT_ID_RE, RadarDrafts, RadarIndex, RadarTests, calibration_view, drive_detail, frame_for,
@@ -40,6 +47,7 @@ from web.radar import (DRAFT_ID_RE, RadarDrafts, RadarIndex, RadarTests, calibra
 from web.settings import NO_RADAR, Settings
 from web.status import (Cache, ResultReader, drives_summary, gpu_busy_reason, picture_path, segment_rows,
                         spread_sample, system_info)
+from web.store import Store
 
 TOKEN_ENV = 'PERCEPTION_WEB_TOKEN'
 TOKEN_RE = re.compile(r'^[A-Za-z0-9_-]{16,}$')
@@ -58,6 +66,8 @@ STATIC_FILES = {
 PUBLIC_STATIC = ('app.css', 'login.js', 'favicon.svg')
 PUBLIC_AUTH_ROUTES = ('/api/auth/login', '/api/auth/setup/check', '/api/auth/setup')
 AUTH_ROUTES = PUBLIC_AUTH_ROUTES + ('/api/auth/logout', '/api/auth/logout-all', '/api/auth/password')
+APP_PATH = '/api/app/v1'
+APK_TYPE = 'application/vnd.android.package-archive'
 LOGIN_MESSAGE = 'Sign in first.'
 DEFAULT_CSP = "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 PROBLEM_CSP = ("default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; "
@@ -176,17 +186,25 @@ class App:
         self.cookie_name = 'perception_web'
         self.gpu_check = gpu_check or gpu_busy_reason
         self.jobs = jobs or JobManager(repo, gpu_check=self.gpu_check)
-        self.settings = settings or Settings(repo)
+        # Opened here, at the start: created and migrated, the JSON files of earlier versions imported.
+        self.store = Store.at(repo / 'outputs' / 'web')
+        self.settings = settings or Settings(repo, store=self.store)
         self.results = ResultReader(repo)
         self.radar_index = RadarIndex(repo)
-        self.radar_tests = RadarTests(repo)
-        self.radar_drafts = RadarDrafts(repo)
+        self.radar_tests = RadarTests(repo, self.store)
+        self.radar_drafts = RadarDrafts(repo, self.store)
+        self.phone_keys = PhoneKeys(repo, self.store)
+        # How the site runs ssh on the comma (a fake in the tests).
+        self.comma_runner = subprocess.run
         self._machine = Cache(3.0)
         self._drives = Cache(10.0)
+        self._fingerprints = Cache(60.0)
         self._radar_lock = threading.Lock()
         # Every change of the calibration or of its tests, so a test saved while the numbers are typed never
         # writes the tests' means over them.
         self._calibration_lock = threading.Lock()
+        # One phone key at a time on the comma.
+        self._comma_key_lock = threading.Lock()
 
     # -- access ------------------------------------------------------------------------------------
     def host_allowed(self, host_header) -> bool:
@@ -293,10 +311,15 @@ class App:
             raise WebError(404, 'no_picture', 'No picture for this moment.')
         return picture(folder, found[0], found[1], self.repo / 'outputs' / 'web' / 'pictures')
 
+    def comma(self) -> Comma:
+        """The comma of web/comma.py: PERCEPTION_COMMA_HOST, else the one of the openpilot.distill whose drives
+        this site reads."""
+        chosen, _ = self.settings.drives_folder()
+        return Comma(comma_host(self.repo, chosen['path'].parent if chosen else None), runner=self.comma_runner)
+
     def comma_recordings(self) -> dict:
         """The newest recordings on the comma, the short ones first-class: which are already here."""
-        chosen, _ = self.settings.drives_folder()
-        comma = Comma(comma_host(self.repo, chosen['path'].parent if chosen else None))
+        comma = self.comma()
         recordings = comma.recordings()
         here = recordings_dir(self.repo)
         for recording in recordings:
@@ -375,7 +398,103 @@ class App:
         return {'drafts': self.radar_drafts.drafts()}
 
     def settings_payload(self) -> dict:
-        return {'drives': self.settings.payload(), 'code': code_version(self.repo)}
+        return {'drives': self.settings.payload(), 'code': code_version(self.repo), 'app': self.app_settings(),
+                'android': android_view(android_build(self.repo)),
+                'store': {'problems': sorted(self.store.problems.values())}}
+
+    # -- the app (web/API.md) ------------------------------------------------------------------------
+    def app_settings(self) -> dict:
+        permission = self.phone_keys.permission()
+        return {'comma_keys': permission['allowed'], 'until': permission['until'],
+                'minutes': PERMISSION_SECONDS // 60, 'phones': self.phone_keys.phones()}
+
+    def set_app(self, body, address: str) -> dict:
+        """POST /api/settings/app, "Let the app add phones to the comma". On, {"comma_keys": true, "password"}: a
+        session alone is not enough to let anything write on the comma, the administrator's password is checked
+        again (AdminAuth, its wrong attempts counted as at sign-in); then the app may add one phone, for
+        PERMISSION_SECONDS at most. Off, {"comma_keys": false}, at once. Every change is recorded (PhoneKeys)."""
+        allow = body.get('comma_keys') if isinstance(body, dict) else None
+        if not isinstance(allow, bool) or set(body) != ({'comma_keys', 'password'} if allow else {'comma_keys'}):
+            raise WebError(400, 'invalid_param', 'Send {"comma_keys": true, "password": "<the administrator\'s '
+                           'password>"}, or {"comma_keys": false}.')
+        if allow:
+            self.auth.confirm_password(body['password'], address)
+        self.phone_keys.set_permission(allow)
+        print('Settings: the app may add one phone to the comma in the next ' + str(PERMISSION_SECONDS // 60)
+              + ' minutes' if allow else 'Settings: the app may not add phones to the comma', flush=True)
+        return self.app_settings()
+
+    def comma_fingerprints(self) -> list[str]:
+        """The comma's ssh-ed25519 host keys in this server's known_hosts (kept a minute: the app asks every 30 s)."""
+        comma = self.comma()
+        host, fingerprints = self._fingerprints.get(lambda: (comma.host, comma.host_key_fingerprints()))
+        if host != comma.host:
+            self._fingerprints.clear()
+            host, fingerprints = self._fingerprints.get(lambda: (comma.host, comma.host_key_fingerprints()))
+        return fingerprints
+
+    def app_info(self) -> dict:
+        """GET /api/app/v1."""
+        return app_info(code_version(self.repo), self.calibration(), self.comma_fingerprints())
+
+    def app_tests(self) -> dict:
+        """GET /api/app/v1/tests: every test, from recordings and from the app, in the order they were saved."""
+        return {'ok': True, 'tests': [app_test(test) for test in self.radar_tests.tests()]}
+
+    def add_app_test(self, body) -> dict:
+        """POST /api/app/v1/tests: a calibration test made with the app (source "app"), counted in the means when
+        kept and re-applied as the others. Sent again with the same client_id, the stored test comes back and
+        nothing changes."""
+        with self._calibration_lock:
+            test, created = self.radar_tests.add_from_app(body)
+            # Sent again too: when the calibration could not follow the first time (an error after the test was
+            # saved), the app's retry makes it follow now, before the app hears that all is well. Nothing changes
+            # when it already follows.
+            tests = self._follow_tests()
+            calibration = self.calibration(tests)
+        if created:
+            print('Radar: calibration test from the app added', flush=True)
+        return {'ok': True, 'test': app_test(test), 'calibration': app_calibration(calibration)}
+
+    def add_comma_key(self, body) -> dict:
+        """POST /api/app/v1/comma-key {"public_key"}: the phone's public key appended to the comma's allowed SSH
+        keys, the only thing the site ever writes on the comma, while the owner allows it (set_app): one phone,
+        then the permission ends. Each step is recorded (PhoneKeys.record) and printed, the first one before
+        anything goes to the comma."""
+        if not self.phone_keys.allowed():
+            raise WebError(403, 'not_allowed', NOT_ALLOWED)
+        if not isinstance(body, dict) or set(body) != {'public_key'}:
+            raise WebError(400, 'invalid_param', 'Send {"public_key": "ssh-ed25519 <key> <comment>"}.')
+        line, fingerprint, comment = public_key_line(body['public_key'])
+        comma = self.comma()
+        with self._comma_key_lock:
+            # Again under the lock: one phone per permission, however many requests come at once.
+            if not self.phone_keys.allowed():
+                raise WebError(403, 'not_allowed', NOT_ALLOWED)
+            # When this cannot be written (503 busy, 500), nothing goes to the comma.
+            self.phone_keys.record(fingerprint, comment, comma.host, 'sending')
+            print('Comma: adding a phone key from the app (' + fingerprint + ')', flush=True)
+            try:
+                result = comma.add_ssh_key(line)
+            except WebError as exc:
+                print('Comma: the phone key was not added (' + fingerprint + ', ' + exc.reason + ')', flush=True)
+                self._key_outcome(fingerprint, comment, comma.host, 'failed', exc.reason)
+                raise
+            print('Comma: ' + ('the phone key was added (' if result == 'added' else 'the comma already had the '
+                  'phone key (') + fingerprint + '); another phone needs the permission again', flush=True)
+            self._key_outcome(fingerprint, comment, comma.host, result, used=True)
+        return {'ok': True, 'added': result == 'added', 'already': result == 'already'}
+
+    def _key_outcome(self, fingerprint: str, comment: str | None, host: str, outcome: str, detail: str | None = None,
+                     used: bool = False) -> None:
+        """What the comma answered, after the "sending" row. The comma has the key or not whatever happens here, so
+        a failed write is printed and never changes the answer to the app: Settings then shows the key as sent and
+        not confirmed (and a permission it should have ended runs out by itself)."""
+        try:
+            self.phone_keys.record(fingerprint, comment, host, outcome, detail, used=used)
+        except WebError as exc:
+            print('Comma: what the comma answered (' + outcome + ') could not be recorded (' + exc.reason + '): '
+                  'Settings shows the key as sent, not confirmed', flush=True)
 
     def set_radar(self, body) -> dict:
         """POST /api/settings/radar: numbers typed by hand (source "typed"), or both cleared."""
@@ -523,7 +642,7 @@ def make_handler(app: App):
             self._problem(401, 'login_required', LOGIN_MESSAGE, api)
 
         def _auth_state(self, signed_in):
-            state = {'configured': app.auth.configured(), 'signed_in': signed_in}
+            state = {'configured': app.auth.configured(), 'signed_in': signed_in, 'api': API_VERSION}
             if signed_in:
                 state['user'] = app.auth.username()
                 state['sessions'] = app.auth.sessions_count()
@@ -584,6 +703,15 @@ def make_handler(app: App):
             if path == '/api/comma/recordings':
                 self._json(200, app.comma_recordings())
                 return
+            if path == APP_PATH:
+                self._json(200, app.app_info())
+                return
+            if path == APP_PATH + '/tests':
+                self._json(200, app.app_tests())
+                return
+            if path in ('/download/android', '/download/android/aab'):
+                self._download(path.endswith('/aab'))
+                return
             match = re.fullmatch(r'/picture/radar/([^/]+)/([0-9]{1,7})\.jpg', path)
             if match:
                 self._send(200, 'image/jpeg', app.radar_picture(match.group(1), int(match.group(2))),
@@ -599,7 +727,7 @@ def make_handler(app: App):
                 return
             if path.startswith(('/api/run/', '/api/settings/', '/api/radar/tests', '/api/radar/calibration',
                                 '/api/radar/drafts')) \
-                    or path in AUTH_ROUTES \
+                    or path in AUTH_ROUTES or path == APP_PATH + '/comma-key' \
                     or re.fullmatch(r'/api/jobs/[^/]+/stop', path):
                 self._problem(405, 'method_not_allowed', 'Use POST.', True)
                 return
@@ -617,7 +745,11 @@ def make_handler(app: App):
             drafts = path == '/api/radar/drafts'
             draft = re.fullmatch(r'/api/radar/drafts/([0-9a-f]{12})', path)
             auth = path in AUTH_ROUTES
-            if not any((run, stop, drives, radar, tests, test, apply, drafts, draft, auth)):
+            app_settings = path == '/api/settings/app'
+            app_tests = path == APP_PATH + '/tests'
+            comma_key = path == APP_PATH + '/comma-key'
+            if not any((run, stop, drives, radar, tests, test, apply, drafts, draft, auth, app_settings, app_tests,
+                        comma_key)):
                 self._problem(404, 'not_found', 'Invalid address.', True)
                 return
             # Same origin and JSON only: no other site and no HTML form can start a job.
@@ -652,6 +784,12 @@ def make_handler(app: App):
                 self._json(200, {'ok': True, **app.add_radar_draft(body)})
             elif draft:
                 self._json(200, {'ok': True, **app.change_radar_draft(draft.group(1), body)})
+            elif app_settings:
+                self._json(200, {'ok': True, 'app': app.set_app(body, self.client_address[0])})
+            elif app_tests:
+                self._json(200, app.add_app_test(body))
+            elif comma_key:
+                self._json(200, app.add_comma_key(body))
             else:
                 self._json(200, {'ok': True, 'drives': app.choose_drives(body)})
 
@@ -674,6 +812,18 @@ def make_handler(app: App):
             else:
                 app.auth.logout(self._session(), everywhere=path == '/api/auth/logout-all')
                 self._json(200, {'ok': True}, [('Set-Cookie', self._expired_cookie())])
+
+        def _download(self, bundle: bool):
+            """The newest APK of outputs/android/latest.json, or its bundle for Google Play."""
+            build = android_build(app.repo)
+            item = (build or {}).get('bundle') if bundle else build
+            if item is None:
+                self._problem(404, 'not_found', 'No bundle for Google Play has been built on this server.' if bundle
+                              else 'No Android app has been built on this server yet.', False)
+                return
+            self._send(200, 'application/octet-stream' if bundle else APK_TYPE, item['path'].read_bytes(),
+                       extra=[('Content-Disposition', 'attachment; filename="' + item['file'] + '"'),
+                              ('Cache-Control', 'no-store')])
 
         def _same_origin(self):
             fetch_site = self.headers.get('Sec-Fetch-Site')

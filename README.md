@@ -44,6 +44,20 @@ it by hand instead: `web/run.sh`.
 
 Results stay on the server, in `outputs/experiments/<job id>/` (not in git).
 
+## Android app
+
+Perception for Android ([`app/android`](app/android/README.md), package `ch.bodhi.perception`, "Openpilot
+Perception" on Google Play) shows the car's radar live, straight from the comma over SSH
+([`app/comma_listener.py`](app/comma_listener.py), read-only), runs the radar test with a tape measure without
+internet and sends the tests to the site when it reaches it. It is built on this server only, never by GitHub:
+[`helpers/build_android.sh`](helpers/build_android.sh) sets up its tools in `/opt/android` and the signing key in
+`~/.config/distill-android` (both shared with openpilot.distill's app; the key never in git), runs its unit tests
+and makes the signed APK and AAB in `outputs/android/`. `install.sh` builds it (step 7, `--no-android` skips it);
+the code update of the site restarts the site first, then builds it again when `app/` changes (or the last build
+is not on Google Play yet) and publishes it on the internal track of Google Play when the key of the Play service
+account is on the server. The first version of the app goes to Google Play by hand: the script says which AAB. A
+phone keeps one of the two (the APK of the site or the app from Google Play): they cannot update each other. Details: [app/android/README.md](app/android/README.md), Google Play.
+
 | Where | What |
 | --- | --- |
 | [`perception/sources/comma_log.py`](perception/sources/comma_log.py) | Frames of `fcamera.hevc` / `ecamera.hevc` with monotonic times, calibration over time, car motion (`deviceMotion`), `carState`. |

@@ -1019,3 +1019,10 @@ input.stepper-input[type="text"]:focus{box-shadow:none;border:0}
 .pick-list .rt-chosen:empty{display:none}
 @media (max-width:480px){.pick-list .rt-chosen{margin-left:0}}
 .info-more{display:flex;flex-direction:column;align-items:flex-start;gap:2px;margin-top:4px}
+
+/* Settings › Perception for Android; Radar › tests from the app */
+#android-card .lead{margin-top:12px}
+#android-card .switch{margin:2px 0 6px}
+#android-card .app-phones{margin-top:10px}
+.app-tests{margin-top:16px}
+.test-row-title .pill{margin-left:2px;vertical-align:1px}

@@ -3,8 +3,8 @@
 # to its control site running. Safe to run again: every step checks what is already there and only does what
 # is missing.
 #
-#   1. system packages: git, curl, ca-certificates, util-linux (flock), procps, ffmpeg (the experiments
-#      decode the road videos with it; apt-get, only the missing ones)
+#   1. system packages: git, curl, ca-certificates, util-linux (flock), procps, unzip (the Android build
+#      tools), ffmpeg (the experiments decode the road videos with it; apt-get, only the missing ones)
 #   2. uv (the Python package manager, https://docs.astral.sh/uv/) in ~/.local/bin, when missing
 #   3. the GPU: a Tesla V100 (Volta, compute capability 7.0) needs the CUDA 12 builds of torch, so
 #      PERCEPTION_UV_EXTRA=v100 is written in the .env of this clone (permissions 600, outside git); a newer
@@ -17,27 +17,35 @@
 #   6. the depth model of Experiment 1 (Depth Anything V2 Small, ~100 MB, Apache-2.0): its code and weights
 #      at pinned versions, checked against their SHA-256, in ~/.cache/openpilot-perception. A failure (no
 #      network) is only a warning: the experiment downloads them when it first runs
-#   7. the control site as the systemd service perception-web (deploy/install_web_service.sh): started now
+#   7. the Android app, Perception for Android (helpers/build_android.sh --no-play): its build tools in
+#      /opt/android and the signing key of this server in ~/.config/distill-android (both shared with
+#      openpilot.distill's app; the key made once, never in git), then its unit tests, the APK and the AAB
+#      in outputs/android. The installer never publishes it: the code update of the site does, on Google
+#      Play, when the key of the Play service account is there too (app/android/README.md). A failure (no
+#      network, not x86_64) is only a warning: the site does not need the app
+#   8. the control site as the systemd service perception-web (deploy/install_web_service.sh): started now
 #      and at every boot on port 8767; it prints the address and, until the administrator exists, the setup
 #      code to create it on the first visit
 #
-# Usage: sudo ./install.sh [--dry-run] [--no-model] [--no-service] [--help]
+# Usage: sudo ./install.sh [--dry-run] [--no-model] [--no-android] [--no-service] [--help]
 #   --dry-run      show what would be done, change nothing (no root needed)
 #   --no-model     skip step 6
-#   --no-service   stop after step 6 (start the site by hand with web/run.sh)
+#   --no-android   skip step 7 (no Android app on this server)
+#   --no-service   stop after step 7 (start the site by hand with web/run.sh)
 # Then open the printed address from the PC or the phone: everything else is set from the Settings page.
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ENV="$ROOT/.env"
-PACKAGES=(git curl ca-certificates util-linux procps ffmpeg)
+PACKAGES=(git curl ca-certificates util-linux procps unzip ffmpeg)
 # Experiments that run Python from .venv: uv sync must not change the packages under them.
 BUSY_PATTERN='perception[.](audit|experiments)[.]'
 
 DRY_RUN=0
 SERVICE=1
 MODEL=1
+ANDROID=1
 
 say() { printf '%s\n' "$*"; }
 step() { printf '\n== %s\n' "$*"; }
@@ -53,6 +61,7 @@ while [ $# -gt 0 ]; do
     --dry-run) DRY_RUN=1 ;;
     --no-service) SERVICE=0 ;;
     --no-model) MODEL=0 ;;
+    --no-android) ANDROID=0 ;;
     -h|--help) usage ;;
     *) die "invalid option: $1 (see --help)" ;;
   esac
@@ -230,8 +239,21 @@ else
   say "first runs, or run the installer again."
 fi
 
-# -- 7. site ----------------------------------------------------------------------------------------
-step "7. control site"
+# -- 7. Android app ---------------------------------------------------------------------------------
+step "7. Android app (tools, signing key, APK and AAB)"
+if [ "$ANDROID" -eq 0 ]; then
+  say "skipped (--no-android)"
+elif [ "$DRY_RUN" -eq 1 ]; then
+  say "[dry run] $ROOT/helpers/build_android.sh --no-play"
+elif "$ROOT/helpers/build_android.sh" --no-play; then
+  say "Android app ready in outputs/android; the code update of the site publishes it on Google Play"
+else
+  say "WARNING: the Android app was not built (above). The site works without it; run the installer again,"
+  say "or helpers/build_android.sh --no-play, to retry."
+fi
+
+# -- 8. site ----------------------------------------------------------------------------------------
+step "8. control site"
 if [ "$SERVICE" -eq 0 ]; then
   say "skipped (--no-service): start it with  web/run.sh"
   exit 0

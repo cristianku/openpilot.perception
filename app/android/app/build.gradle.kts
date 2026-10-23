@@ -4,10 +4,12 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+    id("com.github.triplet.play")
 }
 
 // Release signing comes from the environment: helpers/build_android.sh passes the key of the server
-// (~/.config/distill-android, shared with openpilot.distill's app; never in git).
+// (~/.config/distill-android, shared with openpilot.distill's app; never in git). For Google Play it is the
+// upload key.
 val releaseKeystore: String? = System.getenv("PERCEPTION_KEYSTORE")?.takeIf { it.isNotBlank() }
 
 // The comma side of the radar screen is app/comma_listener.py of this repository: the build copies it into the
@@ -65,6 +67,7 @@ android {
     buildTypes {
         release {
             signingConfig = signingConfigs.getByName("release")
+            // R8: a smaller app; its mapping goes to Google Play with the bundle, for readable crash reports.
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
@@ -112,7 +115,23 @@ kotlin {
     }
 }
 
-// A release is never signed with a debug key or left unsigned: a phone that has the app would refuse the update.
+// Google Play (Gradle Play Publisher), "Openpilot Perception": helpers/build_android.sh passes the key of the Play
+// service account, ~/.config/distill-android/play-service-account.json (the same account as openpilot.distill's
+// app), and the track (--track). Google takes the first version of a new app only by hand, in Play Console.
+// -PperceptionPlayArtifactDir: the folder of the bundle the script built and checked (its signature, its commit):
+// the one uploaded, as it is. Without it the publishing tasks would build the bundle again from whatever the tree
+// holds then. Its R8 mapping is inside the bundle (BUNDLE-METADATA), where Google Play reads it.
+play {
+    System.getenv("PERCEPTION_PLAY_CREDENTIALS")?.takeIf { it.isNotBlank() }
+        ?.let { serviceAccountCredentials.set(file(it)) }
+    (findProperty("perceptionPlayArtifactDir") as String?)?.takeIf { it.isNotBlank() }
+        ?.let { artifactDir.set(file(it)) }
+    track.set("internal")
+    defaultToAppBundles.set(true)
+}
+
+// A release is never signed with a debug key or left unsigned: Google Play and a phone that has the app would
+// refuse it.
 tasks.matching { it.name == "preReleaseBuild" }.configureEach {
     doFirst {
         check(releaseKeystore != null) {

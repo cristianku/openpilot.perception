@@ -237,6 +237,14 @@
   }
 
   // -- shared words of the radar pages -------------------------------------------------------------
+  // A test from the app (source "app"): the reading was captured live on the phone; the comma's recording of
+  // that moment, when it had one, is kept to check it against later.
+  const FROM_APP = 'from the app';
+  function testTime(test) { return (test.source === 'app' ? test.made_unix : null) || test.created || 0; }
+  function testRecording(test) {
+    if (test.recording_number !== null && test.recording_number !== undefined) return 'recording no. ' + test.recording_number;
+    return 'no recording';
+  }
   const CHIPS = {
     measured: {label: 'measured', kind: 'ok', text: 'Measured by your car\'s radar.'},
     camera: {label: '≈ camera', kind: 'imp', text: 'Guessed from the camera alone: an estimate.'},
@@ -631,7 +639,7 @@
     else if (currentTab === 'results') { renderResults(); renderLabSwitch(); }
     else if (currentTab === 'radar') renderRadar();
     else if (currentTab === 'objects') renderObjects();
-    else if (currentTab === 'settings') { renderSources(); renderCalCard(); renderAdmin(); }
+    else if (currentTab === 'settings') { renderSources(); renderCalCard(); renderAndroid(); renderAdmin(); }
     updateButtons();
     if (status) renderLiveJobs();
   }
@@ -1804,8 +1812,11 @@
     const items = recordingItems(false);
     const facts = items.map((item) => item.entry ? recordingFacts(item) : '');
     const fetchStates = items.map((item) => fetchState(item.route));
+    const fromApp = data.radar ? data.radar.tests.tests.filter((test) => test.source === 'app')
+      .sort((a, b) => testTime(b) - testTime(a)) : [];
+    const appOpen = fromApp.map((test) => !!(test.route && radarEntry(test.route)));
     const key = [items, facts, fetchStates, comma.state, comma.recordings,
-      status ? actionReason('fetch_recordings') : ''];
+      status ? actionReason('fetch_recordings') : '', fromApp, appOpen];
     if (same('radar-short', key)) { updateCommaButtons(); return; }
     box.replaceChildren();
     const head = node('div', 'card-head');
@@ -1863,6 +1874,38 @@
     buttons.appendChild(commaButton('Look on the comma', ''));
     box.appendChild(buttons);
     box.appendChild(node('p', 'note', 'Listed in the order the comma made them: its clock can be wrong.'));
+    if (fromApp.length) box.appendChild(appTestsList(fromApp, appOpen));
+  }
+
+  // The tests made with the app: the reading captured live on the phone, the comma's recording of that moment
+  // kept with it, to open once it is on this site.
+  function appTestsList(tests, open) {
+    const part = node('div', 'app-tests');
+    part.appendChild(node('h3', 'cal-sub', 'Tests from the app'));
+    const list = node('div', 'test-rows');
+    tests.forEach((test, index) => {
+      const row = node('div', 'test-row');
+      const text = node('div', 'test-row-text');
+      const title = node('span', 'test-row-title', TARGET_WORDS[test.target] + ' · tape ' + fmtM('tape', test.tape_radar_m)
+        + ' · radar ' + fmtM('reading', test.reading_m) + ' ');
+      title.appendChild(pill(FROM_APP, 'muted'));
+      text.appendChild(title);
+      const detail = [fmtShortDay(testTime(test)), testRecording(test)];
+      if (test.route && !open[index]) detail.push('not on this site yet');
+      if (!test.kept) detail.push('left out');
+      text.appendChild(node('span', 'test-row-detail', detail.join(' · ')));
+      row.appendChild(text);
+      if (open[index]) {
+        const buttons = node('div', 'test-row-buttons');
+        buttons.appendChild(button('Open its recording', 'small', () => go('radar/' + test.route)));
+        row.appendChild(buttons);
+      }
+      list.appendChild(row);
+    });
+    part.appendChild(list);
+    part.appendChild(node('p', 'note', 'While kept, each one counts in the means of your tests like the others; '
+      + 'Settings › Your car\'s radar lists them all.'));
+    return part;
   }
 
   // -- Radar › one drive or recording ------------------------------------------------------------
@@ -3441,8 +3484,11 @@
       }
       return;
     }
-    if (!calEdit && !same('cal-card', [radar.calibration, radar.tests, radar.drafts])) {
+    const problems = data.settings && data.settings.store ? data.settings.store.problems : [];
+    if (!calEdit && !same('cal-card', [radar.calibration, radar.tests, radar.drafts, problems])) {
       buildCalCard(body, radar.calibration, radar.tests, radar.drafts);
+      // Files of an earlier version of the site that could not be imported: kept as they are, said here.
+      for (const problem of problems) body.prepend(node('p', 'callout warn', problem));
     }
     if (settingsAnchor === 'radar' && !anchorDone && data.settings) {
       anchorDone = true;
@@ -3609,7 +3655,7 @@
 
   function testsList(cal, tests, drafts) {
     const list = node('ul', 'checklist cal-tests');
-    const sorted = tests.tests.slice().sort((a, b) => (b.created || 0) - (a.created || 0));
+    const sorted = tests.tests.slice().sort((a, b) => testTime(b) - testTime(a));
     // action: the row's button, under the text on a phone; side: the ⋯ menu, always beside it.
     const row = (mark, kind, title, detail, side, leftOut, action) => {
       const item = node('li', leftOut ? 'left-out' : '');
@@ -3640,8 +3686,9 @@
     for (const test of sorted) {
       const long = test.correction_m <= 0;
       const detail = ['reads ' + Math.abs(test.correction_m).toFixed(2) + ' m ' + (long ? 'long' : 'short')];
-      if (test.created) detail.push(fmtShortDay(test.created));
-      detail.push('recording no. ' + test.recording_number);
+      if (testTime(test)) detail.push(fmtShortDay(testTime(test)));
+      if (test.source === 'app') detail.push(FROM_APP);
+      detail.push(testRecording(test));
       if (!test.kept) detail.push('left out');
       const title = TARGET_WORDS[test.target] + ' · tape ' + fmtM('tape', test.tape_radar_m) + ' · radar ' + fmtM('reading', test.reading_m);
       row(test.kept ? '✓' : '–', test.kept ? 'ok' : 'muted', title, detail.join(' · '),
@@ -3665,8 +3712,24 @@
   }
 
   function openTestMenu(test, cal) {
-    openInfo(TARGET_WORDS[test.target] + ' · tape ' + fmtM('tape', test.tape_radar_m),
-      'radar ' + fmtM('reading', test.reading_m) + ' · recording no. ' + test.recording_number, (body) => {
+    const sub = ['radar ' + fmtM('reading', test.reading_m)];
+    if (test.source === 'app') sub.push(FROM_APP);
+    sub.push(testRecording(test));
+    openInfo(TARGET_WORDS[test.target] + ' · tape ' + fmtM('tape', test.tape_radar_m), sub.join(' · '), (body) => {
+        if (test.source === 'app') {
+          const here = !!(test.route && radarEntry(test.route));
+          body.appendChild(node('p', 'note', 'Captured live with the app on ' + fmtDayTime(test.made_unix || test.created)
+            + (!test.route ? '. The comma had no recording then.'
+              : here ? '. Its recording, no. ' + test.recording_number + ', is on this site: open it to compare the reading.'
+                : '. Its recording on the comma, no. ' + test.recording_number + ', can be checked against it once it is '
+                  + 'on this site.')));
+          if (test.note) body.appendChild(node('p', 'note', 'Note: ' + test.note));
+          if (here) {
+            const open = node('div', 'info-actions');
+            open.appendChild(button('Open its recording', '', () => { closeSheet(); go('radar/' + test.route); }));
+            body.appendChild(open);
+          }
+        }
         const actions = node('div', 'info-actions');
         // The calibration follows the kept tests: without the last one it is cleared.
         const kept = data.radar ? data.radar.tests.tests.filter((item) => item.kept).length : 0;
@@ -3787,6 +3850,135 @@
       list.appendChild(button);
     }
   }
+
+  // -- Settings › Perception for Android ---------------------------------------------------------
+  function fmtBytes(bytes) {
+    if (!isNumber(bytes)) return '';
+    if (bytes >= 1e6) return (bytes / 1e6).toFixed(1) + ' MB';
+    return Math.max(1, Math.round(bytes / 1e3)) + ' kB';
+  }
+  // The app built on this server (helpers/build_android.sh) and the phones it added to the comma.
+  function renderAndroid() {
+    const settings = data.settings;
+    if (!settings) return;
+    const build = settings.android;
+    const app = settings.app;
+    if (same('android-card', [build, app])) return;
+    byId('android-download').hidden = !build;
+    byId('android-note').hidden = !build;
+    // The .aab for Google Play, uploaded by hand in Play Console.
+    byId('android-bundle').hidden = !(build && build.bundle);
+    if (build) {
+      const parts = ['Version ' + (build.version || '?')];
+      if (build.built) parts.push('built ' + fmtDay(build.built));
+      parts.push(fmtBytes(build.size));
+      byId('android-sub').textContent = parts.join(' · ');
+    } else {
+      byId('android-sub').textContent = 'No app built on this server yet.';
+    }
+    renderAppKeys();
+    const list = byId('app-phones');
+    list.replaceChildren();
+    const phones = app ? app.phones : [];
+    list.hidden = !phones.length;
+    for (const phone of phones) {
+      const state = PHONE_STATES[phone.state] || PHONE_STATES.unconfirmed;
+      const item = node('li');
+      item.appendChild(node('span', 'check-mark ' + state.kind, state.mark));
+      const text = node('div', 'check-text');
+      text.appendChild(node('div', 'check-title', phone.comment || 'A phone'));
+      const when = phone.last !== phone.at ? fmtDayTime(phone.at) + ', last ' + fmtDayTime(phone.last) : fmtDayTime(phone.at);
+      text.appendChild(node('div', 'check-detail', state.text + ' ' + when + ' · ' + phone.fingerprint));
+      item.appendChild(text);
+      list.appendChild(item);
+    }
+  }
+  // What the comma did with a key the site sent it (web/app_api.py PhoneKeys.phones).
+  const PHONE_STATES = {
+    added: {kind: 'ok', mark: '✓', text: 'added'},
+    already: {kind: 'ok', mark: '✓', text: 'the comma already had it,'},
+    unconfirmed: {kind: 'todo', mark: '!', text: 'sent, the comma did not confirm it (it may have it),'},
+    refused: {kind: 'muted', mark: '•', text: 'refused by the comma,'}};
+
+  // "Let the app add phones to the comma": on with the administrator's password, for one phone and a few
+  // minutes (web/server.py set_app); it turns itself off then.
+  let askingAppKeys = false;
+  let appKeysTimer = null;
+  function appKeysOn(app) {
+    return !!(app && app.comma_keys && isNumber(app.until) && app.until * 1000 > Date.now());
+  }
+  function renderAppKeys() {
+    const app = data.settings ? data.settings.app : null;
+    const on = appKeysOn(app);
+    const minutes = app && app.minutes ? app.minutes : 10;
+    if (on) askingAppKeys = false;
+    byId('app-comma-keys').checked = on || askingAppKeys;
+    byId('app-keys-form').hidden = !askingAppKeys;
+    let text = 'Off. Turn it on just before you tap "Add this phone to the comma" in the app: with your password, '
+      + 'it lets one phone in, for ' + minutes + ' minutes at most.';
+    if (on) {
+      text = 'On until ' + new Date(app.until * 1000).toLocaleTimeString('en-GB', {hour: '2-digit', minute: '2-digit'})
+        + ': the app may add one phone. It turns itself off then, or as soon as a phone is on the comma.';
+    } else if (askingAppKeys) {
+      text = 'Your password, then Allow one phone: the app may then add one phone, for ' + minutes + ' minutes at most.';
+    }
+    byId('app-comma-keys-state').textContent = text;
+    clearTimeout(appKeysTimer);
+    if (on) appKeysTimer = setTimeout(renderAppKeys, Math.min(app.until * 1000 - Date.now() + 500, 2147483647));
+  }
+  async function setAppKeys(payload) {
+    const answer = await post('/api/settings/app', payload);
+    if (data.settings) data.settings.app = answer.app;
+    same.cache['android-card'] = null;
+    renderAndroid();
+    return answer.app;
+  }
+  function closeAppKeysForm() {
+    askingAppKeys = false;
+    byId('app-keys-password').value = '';
+    byId('app-keys-reason').textContent = '';
+    renderAppKeys();
+  }
+  byId('app-comma-keys').addEventListener('change', async (event) => {
+    const toggle = event.target;
+    if (toggle.checked) {
+      // On only with the password: the form asks for it.
+      askingAppKeys = true;
+      renderAppKeys();
+      byId('app-keys-password').focus();
+      return;
+    }
+    if (askingAppKeys) { closeAppKeysForm(); return; }
+    toggle.disabled = true;
+    try {
+      await setAppKeys({comma_keys: false});
+      toast('The app can no longer add phones to the comma.');
+    } catch (error) {
+      toast(error.message, true);
+      renderAppKeys();
+    } finally {
+      toggle.disabled = false;
+    }
+  });
+  byId('btn-app-keys-cancel').addEventListener('click', closeAppKeysForm);
+  byId('app-keys-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const reason = byId('app-keys-reason');
+    const password = byId('app-keys-password').value;
+    reason.textContent = '';
+    if (!password) { reason.textContent = 'Write your password.'; return; }
+    const button = byId('btn-app-keys-allow');
+    button.disabled = true;
+    try {
+      const app = await setAppKeys({comma_keys: true, password: password});
+      closeAppKeysForm();
+      toast('The app may add one phone to the comma in the next ' + (app.minutes || 10) + ' minutes.');
+    } catch (error) {
+      reason.textContent = error.message;
+    } finally {
+      button.disabled = false;
+    }
+  });
 
   // -- administrator -----------------------------------------------------------------------------
   function renderAdmin() {

@@ -8,15 +8,17 @@ Their radar is read once by the radar_index job (perception.radar.index) into ou
 Every list of drives and recordings is sorted by the route counter, newest first: the comma increases it at
 every start, while its clock can be months off.
 
-Calibration tests (outputs/web/radar_tests.json, 600): a recording standing still in front of something (a
-wall close up, or a parked car farther away), the radar's steady reading there, and the tape: radar (front
-bumper) to it and comma to it. Every test gives
+Calibration tests (the store, outputs/web/perception.sqlite, web/store.py): the car standing still in front of
+something (a wall close up, or a parked car farther away), the radar's steady reading there, and the tape: radar
+(front bumper) to it and comma to it. The reading comes from a recording on this server (a standstill of it), or
+was captured live on the phone by the app (source "app", POST /api/app/v1/tests, web/API.md: the comma's recording
+of that moment is kept with it, to check it against later). Every test gives
   correction        = tape radar - reading            (the radar's zero)
   radar to comma    = tape comma - tape radar
-and the car's calibration is the mean over the tests kept. web/settings.py stores it with where it comes from:
-"tests", "typed" by hand in Settings, or "none" for a car the owner set as having no radar. A test whose
-recording is not on this server yet waits as a draft, tapes only (outputs/web/radar_drafts.json, 600): only the
-owner picking its recording finishes it.
+and the car's calibration is the mean over the tests kept, whatever they come from. web/settings.py stores it with
+where it comes from: "tests", "typed" by hand in Settings, or "none" for a car the owner set as having no radar.
+A test whose recording is not on this server yet waits as a draft, tapes only (the store too): only the owner
+picking its recording finishes it.
 
 How far the calibration can be trusted (docs/design-radar-objects.md 4.2), from its source and the kept tests:
   no_radar    the owner said the car has no radar ("My car has no radar" in Settings);
@@ -35,22 +37,22 @@ import secrets
 import statistics
 import threading
 import time
+import unicodedata
 from pathlib import Path
 
-from web.common import WebError, read_private, write_private
+from web.common import WebError
 from web.settings import NO_RADAR, RADAR_CORRECTION_RANGE_M, RADAR_TO_CAMERA_RANGE_M
+from web.store import (COUNTER_MAX, LEGACY_DRAFTS, LEGACY_TESTS, RECORDING_NAME_RE, SEGMENT_NAME_RE, TARGETS, Store,
+                       is_number, number_or_none, route_of)
 
 # A segment of a drive is a minute long: segment k starts about k minutes after the drive.
 SEGMENT_SECONDS = 60.0
-SEGMENT_NAME_RE = re.compile(r'^[0-9a-f]{18,24}$')
-RECORDING_NAME_RE = re.compile(r'^([0-9a-f]{8}--[0-9a-f]{10})--([0-9]{1,4})$')
 TEST_ID_RE = re.compile(r'^[0-9a-f]{12}$')
 DRAFT_ID_RE = TEST_ID_RE
 # Readings come in 0.25 m steps: half a step is the uncertainty of one reading.
 READING_STEP_M = 0.25
 TAPE_RANGE_M = (0.3, 100.0)
 OVERVIEW_POINTS = 1500
-TARGETS = ('wall', 'car')
 # Confirmed pairs become labels at these distances, so the calibration counts as checked for them only after a
 # test at FAR_TEST_M or more.
 LABEL_RANGE_M = (5.0, 30.0)
@@ -59,7 +61,6 @@ FAR_TEST_M = LABEL_RANGE_M[0]
 DISAGREE_M = 0.5
 # Tape-only tests kept while their recording is out of reach: a few, never a backlog.
 MAX_DRAFTS = 5
-COUNTER_MAX = 0xffffffff
 # The jobs that read or bring radar readings (web/actions.py): while one runs, Home shows it.
 RADAR_ACTIONS = ('radar_index', 'fetch_recordings')
 # The next step on Home, first that applies first (docs/design-radar-objects.md 2.1); "caught_up" when none does.
@@ -74,15 +75,6 @@ def radar_dir(repo: Path) -> Path:
 
 def recordings_dir(repo: Path) -> Path:
     return repo / 'outputs' / 'recordings'
-
-
-def route_of(name: str) -> str:
-    """The drive (route) a segment belongs to: distill names are <route 18 hex><segment 2>, comma names
-    <counter>--<tag>--<segment>."""
-    match = RECORDING_NAME_RE.fullmatch(name)
-    if match:
-        return match.group(1)
-    return name[:18]
 
 
 def route_number(route: str) -> int:
@@ -297,14 +289,28 @@ def frame_for(series: dict, segment_t_s: float) -> tuple[int, float] | None:
 
 
 # -- calibration tests --------------------------------------------------------------------------------
-def is_number(value) -> bool:
-    """A real number: never a bool, NaN or an infinity (json.loads reads NaN from a file edited by hand, and the
-    page's JSON can never carry it)."""
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
-
-
-def number_or_none(value):
-    return value if is_number(value) else None
+# A test from the app (POST /api/app/v1/tests, web/API.md): exactly these keys, as SiteApi.kt sends them.
+APP_TEST_KEYS = frozenset({'client_id', 'created_unix', 'target', 'tape_radar_m', 'tape_comma_m', 'capture', 'comma',
+                           'note'})
+APP_CAPTURE_KEYS = frozenset({'started_unix', 'duration_s', 'samples', 'with_reading', 'reading_m', 'steady_share',
+                              'histogram', 'speed_max_mps', 'onroad'})
+APP_COMMA_KEYS = frozenset({'route', 'git_commit'})
+CLIENT_ID_RE = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
+COMMA_ROUTE_RE = re.compile(r'[0-9a-f]{8}--[0-9a-f]{10}')
+GIT_COMMIT_RE = re.compile(r'[0-9a-f]{7,40}')
+HISTOGRAM_KEY_RE = re.compile(r'[0-9]{1,3}\.[0-9]{2}')
+# A phone's time: from 2017 to 2100, in seconds since 1970.
+UNIX_RANGE = (1_500_000_000.0, 4_102_444_800.0)
+MAX_CAPTURE_S = 600.0
+MAX_SAMPLES = 100_000
+MAX_READING_M = 300.0
+MAX_SPEED_MPS = 100.0
+MAX_NOTE = 500
+APP_TEST_FIELDS = ('client_id', 'target', 'route', 'reading_m', 'tape_radar_m', 'tape_comma_m', 'correction_m',
+                   'made_unix', 'capture', 'git_commit', 'note')
+TEST_COLUMNS = ('id', 'source', 'segment', 'route', 'target', 'from_s', 'to_s', 'reading_m', 'tape_radar_m',
+                'tape_comma_m', 'correction_m', 'kept', 'created', 'client_id', 'made_unix', 'capture', 'git_commit',
+                'note')
 
 
 def half_up(value: float) -> float:
@@ -336,54 +342,169 @@ def target_of(value) -> str:
     return value
 
 
+def correction_of(tapes: dict, reading: float, what: str) -> float:
+    correction = round(tapes['tape_radar_m'] - reading, 2)
+    # Beyond what can be typed in Settings: most likely the wrong recording or a slipped tape, and one such test
+    # would pull the mean of the others with it.
+    low, high = RADAR_CORRECTION_RANGE_M
+    if not low <= correction <= high:
+        raise WebError(400, 'invalid_param', 'The tape and the radar reading are more than 1 m apart: check the '
+                       'tape' + what + '.')
+    return correction
+
+
+def _number(value, low: float, high: float, message: str, *, above: bool = False) -> float:
+    """A number from low (excluded with `above`) to high, or a refusal with the message."""
+    if not is_number(value) or value > high or value < low or (above and value == low):
+        raise WebError(400, 'invalid_param', message)
+    return float(value)
+
+
+def _count(value, high: int, message: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= high:
+        raise WebError(400, 'invalid_param', message)
+    return value
+
+
+def _plain_text(value) -> bool:
+    """Text a person typed: no control characters but new lines and tabs, no lone surrogates."""
+    return isinstance(value, str) and not any(unicodedata.category(character) in ('Cc', 'Cs')
+                                              and character not in '\n\t' for character in value)
+
+
+def app_test_of(body) -> dict:
+    """The fields of a test from the app (POST /api/app/v1/tests, web/API.md), every one checked: a refusal (400
+    invalid_param, with a sentence the app shows) otherwise. The capture must be one the app itself accepts: a
+    target at least half of the time and one reading 80% of it (perception/radar/series.py)."""
+    from perception.radar.series import STANDSTILL_MIN_MODE_SHARE, STANDSTILL_MIN_TARGET_SHARE
+
+    if not isinstance(body, dict) or set(body) != APP_TEST_KEYS:
+        raise WebError(400, 'invalid_param', 'Send exactly {"client_id", "created_unix", "target", "tape_radar_m", '
+                       '"tape_comma_m", "capture", "comma", "note"}.')
+    client_id = body['client_id']
+    if not isinstance(client_id, str) or not CLIENT_ID_RE.fullmatch(client_id):
+        raise WebError(400, 'invalid_param', 'client_id is the id the app gave the test (a UUID).')
+    made = _number(body['created_unix'], *UNIX_RANGE, 'created_unix is when the test was made, in seconds since 1970.')
+    target = target_of(body['target'])
+    tapes = tapes_of(body)
+    capture = body['capture']
+    if not isinstance(capture, dict) or set(capture) != APP_CAPTURE_KEYS:
+        raise WebError(400, 'invalid_param', 'capture has exactly {"started_unix", "duration_s", "samples", '
+                       '"with_reading", "reading_m", "steady_share", "histogram", "speed_max_mps", "onroad"}.')
+    started = _number(capture['started_unix'], *UNIX_RANGE,
+                      'capture.started_unix is when the capture started, in seconds since 1970.')
+    duration = _number(capture['duration_s'], 0.0, MAX_CAPTURE_S,
+                       'capture.duration_s is the length of the capture: more than 0 s, at most 600 s.', above=True)
+    samples = _count(capture['samples'], MAX_SAMPLES, 'capture.samples is the number of radar lines, at most 100000.')
+    with_reading = _count(capture['with_reading'], samples,
+                          'capture.with_reading is how many radar lines had a reading: at most capture.samples.')
+    if capture['reading_m'] is None:
+        raise WebError(400, 'invalid_param', 'The capture has no steady reading: it cannot be a test.')
+    reading = round(_number(capture['reading_m'], 0.0, MAX_READING_M,
+                            'capture.reading_m is the steady reading in metres: more than 0, at most 300.',
+                            above=True), 2)
+    share = _number(capture['steady_share'], 0.0, 1.0, 'capture.steady_share is a share, from 0 to 1.')
+    histogram = capture['histogram']
+    if not isinstance(histogram, dict) or not all(
+            HISTOGRAM_KEY_RE.fullmatch(key) and isinstance(count, int) and not isinstance(count, bool) and count >= 1
+            for key, count in histogram.items()):
+        raise WebError(400, 'invalid_param', 'capture.histogram counts the radar lines of each reading, '
+                       'as {"2.25": 176}.')
+    if sum(histogram.values()) != with_reading:
+        raise WebError(400, 'invalid_param', 'capture.histogram must count every radar line with a reading '
+                       '(capture.with_reading).')
+    key = f'{reading:.2f}'
+    if key not in histogram or abs(histogram[key] / with_reading - share) > 0.005 + 1e-9:
+        raise WebError(400, 'invalid_param', 'capture.reading_m and capture.steady_share must match '
+                       'capture.histogram.')
+    if with_reading < STANDSTILL_MIN_TARGET_SHARE * samples or share < STANDSTILL_MIN_MODE_SHARE:
+        raise WebError(400, 'invalid_param', 'The capture was not steady enough to be a test: the radar must see '
+                       'the target at least half of the time, and one reading 80% of it.')
+    speed = capture['speed_max_mps']
+    if speed is not None:
+        speed = _number(speed, 0.0, MAX_SPEED_MPS, 'capture.speed_max_mps is the highest speed in m/s, or null.')
+    if not isinstance(capture['onroad'], bool):
+        raise WebError(400, 'invalid_param', 'capture.onroad is true or false.')
+    comma = body['comma']
+    if not isinstance(comma, dict) or set(comma) != APP_COMMA_KEYS:
+        raise WebError(400, 'invalid_param', 'comma has exactly {"route", "git_commit"}.')
+    route = comma['route']
+    if route is not None and (not isinstance(route, str) or not COMMA_ROUTE_RE.fullmatch(route)):
+        raise WebError(400, 'invalid_param', 'comma.route is the comma\'s recording during the capture, as '
+                       '"00000134--a5c8197883", or null.')
+    commit = comma['git_commit']
+    if commit is not None and (not isinstance(commit, str) or not GIT_COMMIT_RE.fullmatch(commit)):
+        raise WebError(400, 'invalid_param', 'comma.git_commit is the openpilot commit of the comma (7 to 40 hex '
+                       'digits), or null.')
+    note = body['note']
+    if not _plain_text(note) or len(note) > MAX_NOTE:
+        raise WebError(400, 'invalid_param', 'note is a text of at most 500 characters.')
+    correction = correction_of(tapes, reading, '')
+    kept = {'started_unix': started, 'duration_s': duration, 'samples': samples, 'with_reading': with_reading,
+            'reading_m': reading, 'steady_share': share, 'histogram': dict(sorted(histogram.items())),
+            'speed_max_mps': speed, 'onroad': capture['onroad']}
+    return {'client_id': client_id, 'target': target, 'route': route, 'reading_m': reading, **tapes,
+            'correction_m': correction, 'made_unix': made,
+            'capture': json.dumps(kept, sort_keys=True, separators=(',', ':')), 'git_commit': commit, 'note': note}
+
+
 def test_view(test: dict) -> dict:
-    """A saved test as the page sees it, with its recording number. Tests saved before the parked-car test
-    existed were all in front of a wall."""
-    route = test.get('route') or route_of(test['segment'])
-    return {'id': test.get('id'), 'segment': test['segment'], 'route': route, 'recording_number': route_number(route),
+    """A saved test as the page sees it, with its recording number. A test from the app (source "app") also has
+    its client_id, when it was made on the phone (made_unix), its note and the comma's commit; its route is the
+    comma's recording during the capture (null when there was none), its segment and moment null."""
+    segment = test.get('segment')
+    route = test.get('route') or (route_of(segment) if segment else None)
+    view = {'id': test.get('id'), 'segment': segment, 'route': route,
+            'recording_number': route_number(route) if route else None,
             'target': test.get('target') if test.get('target') in TARGETS else 'wall',
             'from_s': number_or_none(test.get('from_s')), 'to_s': number_or_none(test.get('to_s')),
             'reading_m': test['reading_m'], 'tape_radar_m': test['tape_radar_m'], 'tape_comma_m': test['tape_comma_m'],
             'correction_m': round(test['tape_radar_m'] - test['reading_m'], 2), 'kept': test.get('kept', True) is True,
             'created': number_or_none(test.get('created'))}
+    if test.get('source') == 'app':
+        view.update({'source': 'app', 'client_id': test.get('client_id'),
+                     'made_unix': number_or_none(test.get('made_unix')), 'note': test.get('note') or '',
+                     'git_commit': test.get('git_commit')})
+    return view
 
 
-def stored_list(path: Path, what: str | None = None) -> list:
-    """The entries of a small JSON list file, as saved ([] when there is none). A file that is there but holds no
-    list reads as [] for the page; before a write (`what` names it in the message) it is refused instead, so what
-    it holds is never written over."""
-    text = read_private(path)
-    if not text:
-        return []
-    try:
-        data = json.loads(text)
-    except ValueError:
-        data = None
-    if isinstance(data, list):
-        return data
-    if what is not None:
-        raise WebError(500, 'unreadable', 'Cannot read the ' + what + ' saved on this server: the file is damaged. '
-                       'It is kept as it is; nothing was saved.')
-    return []
+def test_row(row: dict) -> dict:
+    """A test of the store as the means and the views read it."""
+    return {**row, 'kept': bool(row['kept'])}
 
 
-def usable(test) -> bool:
-    """A test with what the means need (a file edited by hand may have less: it is skipped, never dropped)."""
-    return isinstance(test, dict) and isinstance(test.get('id'), str) and isinstance(test.get('segment'), str) \
-        and (SEGMENT_NAME_RE.fullmatch(test['segment']) or RECORDING_NAME_RE.fullmatch(test['segment'])) is not None \
-        and test.get('route') in (None, route_of(test['segment'])) \
-        and all(is_number(test.get(key)) for key in ('reading_m', 'tape_radar_m', 'tape_comma_m'))
+def new_id(db, table: str) -> str:
+    while True:
+        candidate = secrets.token_hex(6)
+        if db.execute('SELECT 1 FROM ' + table + ' WHERE id = ?', (candidate,)).fetchone() is None:
+            return candidate
+
+
+def insert_test(db, test: dict) -> None:
+    db.execute('INSERT INTO radar_tests (' + ', '.join(TEST_COLUMNS) + ') VALUES ('
+               + ', '.join('?' * len(TEST_COLUMNS)) + ')',
+               [int(test['kept']) if key == 'kept' else test.get(key) for key in TEST_COLUMNS])
 
 
 class RadarTests:
+    """The calibration tests, in the store (web/store.py, table radar_tests): from recordings (POST
+    /api/radar/tests) and from the app (POST /api/app/v1/tests), in the order they were saved."""
     TEST_KEYS = {'segment', 'standstill', 'tape_radar_m', 'tape_comma_m'}
 
-    def __init__(self, repo: Path):
-        self.path = repo / 'outputs' / 'web' / 'radar_tests.json'
-        self._lock = threading.Lock()
+    def __init__(self, repo: Path, store: Store | None = None):
+        # The JSON file of earlier versions, imported into the store the first time it is seen.
+        self.path = repo / 'outputs' / 'web' / LEGACY_TESTS
+        self._store = store
+
+    @property
+    def store(self) -> Store:
+        return self._store or Store.at(self.path.parent)
 
     def tests(self) -> list[dict]:
-        return [test for test in stored_list(self.path) if usable(test)]
+        store = self.store
+        store.check(LEGACY_TESTS)
+        return [test_row(row) for row in store.rows('SELECT * FROM radar_tests ORDER BY seq')
+                if all(is_number(row[key]) for key in ('reading_m', 'tape_radar_m', 'tape_comma_m'))]
 
     def summary(self) -> dict:
         """The tests and what they say together: correction and distance radar -> comma (means), their spread,
@@ -424,40 +545,54 @@ class RadarTests:
         if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(stills):
             raise WebError(400, 'invalid_param', 'Choose one of the moments when the car stood still.')
         still = stills[index]
-        correction = round(tapes['tape_radar_m'] - still['reading_m'], 2)
-        # Beyond what can be typed in Settings: most likely the wrong recording or a slipped tape, and one such
-        # test would pull the mean of the others with it.
-        low, high = RADAR_CORRECTION_RANGE_M
-        if not low <= correction <= high:
-            raise WebError(400, 'invalid_param', 'The tape and the radar reading are more than 1 m apart: check the '
-                           'tape, or that this is the recording of the test.')
-        test = {'id': secrets.token_hex(6), 'segment': segment, 'route': route_of(segment), 'target': target,
+        correction = correction_of(tapes, still['reading_m'], ', or that this is the recording of the test')
+        test = {'source': 'recording', 'segment': segment, 'route': route_of(segment), 'target': target,
                 'from_s': still['from_s'], 'to_s': still['to_s'], 'reading_m': still['reading_m'], **tapes,
                 'correction_m': correction, 'kept': True, 'created': round(time.time(), 1)}
-        with self._lock:
-            tests = stored_list(self.path, 'radar tests')
-            tests.append(test)
-            write_private(self.path, json.dumps(tests, indent=1))
+        store = self.store
+        store.require(LEGACY_TESTS)
+        with store.write() as db:
+            test['id'] = new_id(db, 'radar_tests')
+            insert_test(db, test)
         return test_view(test)
 
+    def add_from_app(self, body) -> tuple[dict, bool]:
+        """A test made with the app, the reading captured live on the phone (app_test_of). Idempotent on its
+        client_id: sent again (a reply lost on the way), it is the test already stored, never a second one, and
+        (stored, False) comes back; another test under a client_id already taken is refused (409)."""
+        fields = app_test_of(body)
+        store = self.store
+        store.require(LEGACY_TESTS)
+        with store.write() as db:
+            found = db.execute('SELECT * FROM radar_tests WHERE client_id = ?', (fields['client_id'],)).fetchone()
+            if found is not None:
+                stored = test_row(dict(found))
+                if any(stored[key] != value for key, value in fields.items()):
+                    raise WebError(409, 'client_id_taken', 'Another test was already saved on the site with the id '
+                                   'of this one.')
+                return stored, False
+            test = {'source': 'app', 'segment': None, 'from_s': None, 'to_s': None, 'kept': True,
+                    'created': round(time.time(), 1), **fields}
+            test['id'] = new_id(db, 'radar_tests')
+            insert_test(db, test)
+        return test, True
+
     def change(self, test_id: str, body) -> None:
-        """{"kept": bool} keeps or leaves out a test; {"delete": true} removes it."""
+        """{"kept": bool} keeps or leaves out a test; {"delete": true} removes it (a test from the app can then
+        be sent again)."""
         if not TEST_ID_RE.fullmatch(test_id) or not isinstance(body, dict) or len(body) != 1 or (
                 'kept' in body and not isinstance(body['kept'], bool)) or (
                 'delete' in body and body['delete'] is not True) or not ({'kept', 'delete'} & set(body)):
             raise WebError(400, 'invalid_param', 'Send {"kept": true|false} or {"delete": true}.')
-        with self._lock:
-            tests = stored_list(self.path, 'radar tests')
-            for test in tests:
-                if usable(test) and test['id'] == test_id:
-                    break
-            else:
+        store = self.store
+        store.require(LEGACY_TESTS)
+        with store.write() as db:
+            if db.execute('SELECT 1 FROM radar_tests WHERE id = ?', (test_id,)).fetchone() is None:
                 raise WebError(404, 'unknown_test', 'Unknown test.')
             if 'delete' in body:
-                tests = [t for t in tests if t is not test]
+                db.execute('DELETE FROM radar_tests WHERE id = ?', (test_id,))
             else:
-                test['kept'] = body['kept']
-            write_private(self.path, json.dumps(tests, indent=1))
+                db.execute('UPDATE radar_tests SET kept = ? WHERE id = ?', (1 if body['kept'] else 0, test_id))
 
 
 def kept_ids(summary: dict) -> list[str]:
@@ -496,29 +631,29 @@ def calibration_view(values: dict, summary: dict) -> dict:
 
 
 # -- drafts -------------------------------------------------------------------------------------------
-DRAFTS_WHAT = 'radar tests waiting for their recording'
-
-
 class RadarDrafts:
-    """Tape-only tests waiting for their recording (the comma was out of reach): at most MAX_DRAFTS. A draft is
-    deleted when its test is saved or from the page; it never turns into a test by itself."""
+    """Tape-only tests waiting for their recording (the comma was out of reach), in the store (table
+    radar_drafts): at most MAX_DRAFTS. A draft is deleted when its test is saved or from the page; it never turns
+    into a test by itself."""
     KEYS = {'target', 'tape_radar_m', 'tape_comma_m'}
 
-    def __init__(self, repo: Path):
-        self.path = repo / 'outputs' / 'web' / 'radar_drafts.json'
-        self._lock = threading.Lock()
+    def __init__(self, repo: Path, store: Store | None = None):
+        # The JSON file of earlier versions, imported into the store the first time it is seen.
+        self.path = repo / 'outputs' / 'web' / LEGACY_DRAFTS
+        self._store = store
 
-    @staticmethod
-    def _usable(draft) -> bool:
-        return isinstance(draft, dict) and isinstance(draft.get('id'), str) and draft.get('target') in TARGETS \
-            and all(is_number(draft.get(key)) for key in ('tape_radar_m', 'tape_comma_m'))
+    @property
+    def store(self) -> Store:
+        return self._store or Store.at(self.path.parent)
 
     def drafts(self) -> list[dict]:
         """Newest first."""
-        return [{'id': draft['id'], 'created': number_or_none(draft.get('created')), 'target': draft['target'],
+        store = self.store
+        store.check(LEGACY_DRAFTS)
+        return [{'id': draft['id'], 'created': number_or_none(draft['created']), 'target': draft['target'],
                  'tape_radar_m': draft['tape_radar_m'], 'tape_comma_m': draft['tape_comma_m'],
-                 'marker_counter': draft.get('marker_counter') if is_number(draft.get('marker_counter')) else None}
-                for draft in reversed(stored_list(self.path)) if self._usable(draft)]
+                 'marker_counter': draft['marker_counter']}
+                for draft in store.rows('SELECT * FROM radar_drafts ORDER BY seq DESC')]
 
     def get(self, draft_id: str) -> dict | None:
         return next((draft for draft in self.drafts() if draft['id'] == draft_id), None)
@@ -535,16 +670,17 @@ class RadarDrafts:
         if marker is not None and (isinstance(marker, bool) or not isinstance(marker, int)
                                    or not 0 <= marker <= COUNTER_MAX):
             raise WebError(400, 'invalid_param', 'marker_counter is a recording number, or null.')
-        draft = {'id': secrets.token_hex(6), 'created': round(time.time(), 1), 'target': target, **tapes,
-                 'marker_counter': marker}
-        with self._lock:
-            drafts = stored_list(self.path, DRAFTS_WHAT)
-            if sum(1 for stored in drafts if self._usable(stored)) >= MAX_DRAFTS:
+        store = self.store
+        store.require(LEGACY_DRAFTS)
+        with store.write() as db:
+            if db.execute('SELECT COUNT(*) FROM radar_drafts').fetchone()[0] >= MAX_DRAFTS:
                 raise WebError(409, 'too_many_drafts', str(MAX_DRAFTS) + ' tests are already waiting for their '
                                'recording: finish or delete one first.')
-            drafts.append(draft)
-            write_private(self.path, json.dumps(drafts, indent=1))
-        return self.get(draft['id'])
+            draft_id = new_id(db, 'radar_drafts')
+            db.execute('INSERT INTO radar_drafts (id, created, target, tape_radar_m, tape_comma_m, marker_counter) '
+                       'VALUES (?, ?, ?, ?, ?, ?)', (draft_id, round(time.time(), 1), target, tapes['tape_radar_m'],
+                                                     tapes['tape_comma_m'], marker))
+        return self.get(draft_id)
 
     def change(self, draft_id: str, body) -> None:
         """{"delete": true} removes a draft."""
@@ -554,13 +690,10 @@ class RadarDrafts:
             raise WebError(404, 'unknown_draft', 'This test is no longer waiting: it was finished or deleted.')
 
     def remove(self, draft_id: str) -> bool:
-        with self._lock:
-            drafts = stored_list(self.path, DRAFTS_WHAT)
-            left = [draft for draft in drafts if not (self._usable(draft) and draft['id'] == draft_id)]
-            if len(left) == len(drafts):
-                return False
-            write_private(self.path, json.dumps(left, indent=1))
-        return True
+        store = self.store
+        store.require(LEGACY_DRAFTS)
+        with store.write() as db:
+            return db.execute('DELETE FROM radar_drafts WHERE id = ?', (draft_id,)).rowcount > 0
 
 
 # -- the next step on Home ----------------------------------------------------------------------------

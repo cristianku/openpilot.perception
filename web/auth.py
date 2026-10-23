@@ -314,10 +314,14 @@ class AdminAuth:
                 self._sessions.pop(_session_key(token), None)
             self._save_sessions()
 
-    def change_password(self, token: str, current, new, address: str) -> str:
-        """Every other browser is signed out; the answer is the new session of this one."""
+    def confirm_password(self, current, address: str) -> dict:
+        """The administrator's current password asked again before an action a session alone may not take (a new
+        password, a phone key on the comma): 403 wrong_password otherwise, counted as a wrong sign-in attempt of
+        `address`. The answer is the administrator's record."""
         self.throttle.check(address)
         with self._lock:
+            if self._admin is None:
+                raise WebError(409, 'not_configured', 'Create the administrator first.')
             admin = dict(self._admin)
         if not isinstance(current, str) or len(current) > MAX_PASSWORD:
             current = ''
@@ -328,7 +332,14 @@ class AdminAuth:
             slot.release()
         if not ok:
             self.throttle.failed(address)
+            print('Site: wrong password given to confirm an action', flush=True)
             raise WebError(403, 'wrong_password', 'The current password is wrong.')
+        self.throttle.succeeded(address)
+        return admin
+
+    def change_password(self, token: str, current, new, address: str) -> str:
+        """Every other browser is signed out; the answer is the new session of this one."""
+        admin = self.confirm_password(current, address)
         check_new_password(new, admin['user'])
         stored = hash_password(new)
         with self._lock:

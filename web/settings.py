@@ -16,8 +16,14 @@ With them in settings.json:
                              back); values saved before the source was kept were typed;
   radar_calibration_version  +1 on every change of the values or their source, 0 before any: a confirmed pair
                              records the version it was seen with.
-Every version is also appended to outputs/web/radar_calibrations.json (600, entries never changed):
-[{version, at, radar_to_camera_m, radar_correction_m, source, test_ids}].
+Every version is also appended to the history in the store (web/store.py, table radar_calibrations, never
+changed): {version, at, radar_to_camera_m, radar_correction_m, source, test_ids}. Earlier versions kept it in
+outputs/web/radar_calibrations.json, imported once.
+
+The app (web/API.md): "Let the app add phones to the comma" is not a setting of this file. It is given with the
+administrator's password, for one phone and a few minutes, and every change is recorded in the store (web/app_api.py
+PhoneKeys, table app_permissions). An app_comma_keys written here by an earlier version is no longer read: the
+permission is off until the owner gives it again.
 
 PERCEPTION_DATA_DIR (environment, or the .env of this clone written by install.sh) adds a folder to the
 choices and is the default when nothing was chosen on the page yet.
@@ -32,6 +38,7 @@ from pathlib import Path
 
 from web.common import WebError, read_private, write_private
 from web.status import SOURCE_ID_RE, drives_summary, segment_rows, source_candidates
+from web.store import LEGACY_CALIBRATIONS, Store
 
 DATA_ENV = 'PERCEPTION_DATA_DIR'
 # A comma behind the radar of its own car: between the bumper and the windshield.
@@ -61,10 +68,15 @@ def env_value(repo: Path, key: str) -> str:
 
 
 class Settings:
-    def __init__(self, repo: Path, path: Path | None = None):
+    def __init__(self, repo: Path, path: Path | None = None, store: Store | None = None):
         self.repo = repo
         self.path = path or repo / 'outputs' / 'web' / 'settings.json'
         self._lock = threading.Lock()
+        self._store = store
+
+    @property
+    def store(self) -> Store:
+        return self._store or Store.at(self.path.parent)
 
     def _saved(self) -> dict:
         text = read_private(self.path)
@@ -145,21 +157,18 @@ class Settings:
 
     @property
     def history_path(self) -> Path:
-        return self.path.parent / 'radar_calibrations.json'
+        """The history file of earlier versions, imported into the store the first time it is seen."""
+        return self.path.parent / LEGACY_CALIBRATIONS
 
     def radar_history(self) -> list[dict]:
-        """Every calibration version, oldest first. A file that is there but cannot be read is refused: it is
-        never written over."""
-        text = read_private(self.history_path)
-        if not text:
-            return []
-        try:
-            data = json.loads(text)
-        except ValueError:
-            data = None
-        if not isinstance(data, list):
-            raise WebError(500, 'unreadable', 'Cannot read the history of the radar calibration on this server.')
-        return data
+        """Every calibration version, oldest first. Refused while a history file of an earlier version is there
+        and cannot be read: a version is never given twice."""
+        store = self.store
+        store.require(LEGACY_CALIBRATIONS)
+        return [{'version': row['version'], 'at': row['at'], 'radar_to_camera_m': row['radar_to_camera_m'],
+                 'radar_correction_m': row['radar_correction_m'], 'source': row['source'],
+                 'test_ids': json.loads(row['test_ids'])}
+                for row in store.rows('SELECT * FROM radar_calibrations ORDER BY seq')]
 
     def set_radar(self, body) -> dict:
         """{"radar_to_camera_m": metres | null, "radar_correction_m": metres | null}, either or both, typed by
@@ -203,18 +212,18 @@ class Settings:
         the history, then in settings.json. True when it changed."""
         history = self.radar_history()
         before = {key: self._radar_value(saved, key) for key in RADAR_KEYS}
-        before_ids = history[-1].get('test_ids') if history and isinstance(history[-1], dict) else []
+        before_ids = history[-1]['test_ids'] if history else []
         if before == values and self._radar_source(saved) == source and (source != 'tests' or before_ids == test_ids):
             return False
-        # A history entry whose settings.json write failed keeps its number: the next version comes after it.
-        last = max((entry.get('version', 0) for entry in history
-                    if isinstance(entry, dict) and isinstance(entry.get('version'), int)), default=0)
-        version = max(self._radar_version(saved), last) + 1
         correction = values['radar_correction_m']
-        entry = {'version': version, 'at': round(time.time(), 1), 'radar_to_camera_m': values['radar_to_camera_m'],
-                 'radar_correction_m': 0.0 if correction is None else correction, 'source': source,
-                 'test_ids': test_ids}
-        write_private(self.history_path, json.dumps([*history, entry], indent=1))
+        with self.store.write() as db:
+            # A history entry whose settings.json write failed keeps its number: the next version comes after it.
+            last = db.execute('SELECT MAX(version) FROM radar_calibrations').fetchone()[0] or 0
+            version = max(self._radar_version(saved), last) + 1
+            db.execute('INSERT INTO radar_calibrations (version, at, radar_to_camera_m, radar_correction_m, source, '
+                       'test_ids) VALUES (?, ?, ?, ?, ?, ?)',
+                       (version, round(time.time(), 1), values['radar_to_camera_m'],
+                        0.0 if correction is None else correction, source, json.dumps(list(test_ids))))
         for key, value in values.items():
             if value is None:
                 saved.pop(key, None)
