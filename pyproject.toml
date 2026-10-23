@@ -11,8 +11,11 @@ dependencies = [
   "huggingface-hub",
   "numpy>=2.0",
   "opencv-python-headless",
+  # Reading comma logs without openpilot (perception.sources.rlog).
+  "pycapnp==2.1.0",
   "safetensors",
   "torch==2.13.0",
+  "zstandard",
 ]
 
 [project.optional-dependencies]
@@ -25,8 +28,6 @@ cuda13 = []
 
 [dependency-groups]
 dev = [
-  # The tests build carState schemas of several versions (tests/fixtures), as openpilot's logs use them.
-  "pycapnp==2.1.0",
   "ruff>=0.11",
 ]
 
