@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
+import web.pictures
+import web.radar
 from web.common import WebError
-from web.radar import RadarIndex, RadarTests, drive_detail, frame_for, route_of, segment_folders, segment_number
+from web.pictures import picture
+from web.radar import (RadarIndex, RadarTests, drive_detail, frame_for, longest_still, route_of, segment_folders,
+                       segment_number)
 
 CALIBRATION = {'radar_to_camera_m': 1.5, 'radar_correction_m': -0.89, 'radar_to_reference_m': 0.61}
 
@@ -81,12 +87,35 @@ class Drives(unittest.TestCase):
         none = {'radar_to_camera_m': None, 'radar_correction_m': 0.0, 'radar_to_reference_m': None}
         self.assertIsNone(index.drives(self.folders, none)['drives'][0]['minimum_from_comma_m'])
 
+    def test_summary_is_kept_until_something_changes(self):
+        # GET /api/status asks for it every 4 s of every open tab: the series are read once, not every time.
+        index = RadarIndex(self.repo)
+        first = index.drives(self.folders, CALIBRATION)
+        with mock.patch.object(web.radar, 'load_series', wraps=web.radar.load_series) as reads:
+            self.assertIs(index.drives(self.folders, CALIBRATION), first)
+            self.assertEqual(reads.call_count, 0)
+            # Another calibration, or a series written since: read again.
+            index.drives(self.folders, dict(CALIBRATION, radar_to_reference_m=0.5))
+            self.assertEqual(reads.call_count, len(self.folders))
+            write_series(self.repo, '00000135--0123456789--0')
+            index.drives(self.folders, CALIBRATION)
+            self.assertEqual(reads.call_count, 2 * len(self.folders))
+
     def test_detail(self):
         detail = drive_detail(self.repo, self.folders, '00000134--a5c8197883', CALIBRATION)
         self.assertEqual(detail['segments'][0]['standstills'][0]['reading_m'], 2.25)
+        self.assertEqual(detail['segments'][0]['longest_still_s'], 19.9)
         self.assertEqual(detail['chart']['from_comma_m'][0], 2.86)
         with self.assertRaises(WebError):
             drive_detail(self.repo, self.folders, 'ffffffff--ffffffffff', CALIBRATION)
+
+    def test_longest_still(self):
+        # Moving, still 1.4 s, moving: never the 2 s a standstill needs.
+        times = [i / 10 for i in range(40)]
+        speeds = [3.0] * 10 + [0.0] * 15 + [3.0] * 15
+        self.assertEqual(longest_still(times, speeds), 1.4)
+        self.assertEqual(longest_still(times, [0.0] * 40), 3.9)
+        self.assertEqual(longest_still([], []), 0.0)
 
     def test_frame_for(self):
         series = {'frames': {'t_s': [0.04, 0.09, 0.14]}}
@@ -131,6 +160,47 @@ class Tests(unittest.TestCase):
         with self.assertRaises(WebError):
             self.tests.change('nothere00000', {'kept': True})
         self.assertEqual(self.tests.summary()['kept'], 0)
+
+
+class Pictures(unittest.TestCase):
+    """web.pictures: a kept picture is served as it is; ffmpeg runs for at most DECODERS frames at once."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.folder = Path(self.directory.name) / '0000011e0c8825628a01'
+        self.folder.mkdir()
+        (self.folder / 'fcamera.hevc').write_bytes(b'not a video')
+        self.cache = Path(self.directory.name) / 'pictures'
+
+    def test_kept_picture_without_ffmpeg(self):
+        self.cache.mkdir()
+        (self.cache / '0000011e0c8825628a01-0007.jpg').write_bytes(b'\xff\xd8kept')
+        with mock.patch.object(web.pictures.subprocess, 'run') as run:
+            self.assertEqual(picture(self.folder, 7, None, self.cache), b'\xff\xd8kept')
+        run.assert_not_called()
+
+    def test_busy_when_every_decoder_is_taken(self):
+        taken = threading.BoundedSemaphore(1)
+        taken.acquire()
+        with mock.patch.object(web.pictures, '_decoders', taken), mock.patch.object(web.pictures, 'WAIT_S', 0.01), \
+                mock.patch.object(web.pictures.subprocess, 'run') as run:
+            with self.assertRaises(WebError) as busy:
+                picture(self.folder, 8, None, self.cache)
+        self.assertEqual((busy.exception.status, busy.exception.reason), (503, 'busy'))
+        run.assert_not_called()
+
+    def test_made_once_and_kept(self):
+        made = mock.Mock(returncode=0, stdout=b'\xff\xd8made')
+        with mock.patch.object(web.pictures.subprocess, 'run', return_value=made) as run:
+            self.assertEqual(picture(self.folder, 9, None, self.cache), b'\xff\xd8made')
+            self.assertEqual(picture(self.folder, 9, None, self.cache), b'\xff\xd8made')
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(sorted(path.name for path in self.cache.iterdir()), ['0000011e0c8825628a01-0009.jpg'])
+        # Every decoder is free again.
+        self.assertTrue(all(web.pictures._decoders.acquire(blocking=False) for _ in range(web.pictures.DECODERS)))
+        for _ in range(web.pictures.DECODERS):
+            web.pictures._decoders.release()
 
 
 if __name__ == '__main__':

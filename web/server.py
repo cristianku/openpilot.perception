@@ -35,9 +35,9 @@ from web.common import REPO, WebError, render_problem, short_text, strict_json_l
 from web.comma import Comma, comma_host
 from web.jobs import JOB_ID_RE, JobManager, describe
 from web.pictures import picture
-from web.radar import (RadarIndex, RadarTests, drive_detail, frame_for, load_series, not_indexed, recordings_dir,
-                       segment_folders)
-from web.settings import Settings
+from web.radar import (DRAFT_ID_RE, RadarDrafts, RadarIndex, RadarTests, calibration_view, drive_detail, frame_for,
+                       kept_ids, load_series, next_step, not_indexed, radar_overview, recordings_dir, segment_folders)
+from web.settings import NO_RADAR, Settings
 from web.status import (Cache, ResultReader, drives_summary, gpu_busy_reason, picture_path, segment_rows,
                         spread_sample, system_info)
 
@@ -180,9 +180,13 @@ class App:
         self.results = ResultReader(repo)
         self.radar_index = RadarIndex(repo)
         self.radar_tests = RadarTests(repo)
+        self.radar_drafts = RadarDrafts(repo)
         self._machine = Cache(3.0)
         self._drives = Cache(10.0)
         self._radar_lock = threading.Lock()
+        # Every change of the calibration or of its tests, so a test saved while the numbers are typed never
+        # writes the tests' means over them.
+        self._calibration_lock = threading.Lock()
 
     # -- access ------------------------------------------------------------------------------------
     def host_allowed(self, host_header) -> bool:
@@ -234,13 +238,17 @@ class App:
         machine = self._machine.get(lambda: system_info(self.repo))
         jobs = self.jobs.list_jobs()
         drives = self.drives()
+        calibration = self.calibration()
+        # From the kept series only: the status never starts the reading of the radar (GET /api/radar does).
+        radar = self.radar_index.drives(self.radar_folders(), calibration)
         return {'time': time.time(), 'code': code_version(self.repo), 'system': machine, 'jobs': jobs,
                 'actions': self.action_states(machine, jobs, drives), 'drives': {
                     'source': drives['source'], 'counts': drives['counts'],
                     'sizes': {name: min(size, drives['counts']['ready']) if size else drives['counts']['ready']
                               for name, size in SIZES.items()}},
                 'audit_jobs': audit_jobs(), 'latest': latest_by_kind(self.results.results()),
-                'radar': self.settings.radar_payload()}
+                'radar': calibration, 'radar_summary': radar_overview(radar),
+                'next': next_step(calibration, self.radar_drafts.drafts(), radar, jobs)}
 
     # -- radar -------------------------------------------------------------------------------------
     def radar_folders(self) -> dict:
@@ -263,14 +271,19 @@ class App:
                     print('Job started: ' + describe(job), flush=True)
                 except WebError:
                     job = None
-        calibration = self.settings.radar_payload()
-        return {'calibration': calibration, 'tests': self.radar_tests.summary(),
+        tests = self.radar_tests.summary()
+        calibration = self.calibration(tests)
+        return {'calibration': calibration, 'tests': tests, 'drafts': self.radar_drafts.drafts(),
                 'summary': self.radar_index.drives(folders, calibration), 'pending': len(pending), 'job': job}
+
+    def calibration(self, tests: dict | None = None) -> dict:
+        """The calibration in use, its status and what the tests give (web/radar.py calibration_view)."""
+        return calibration_view(self.settings.radar_state(), tests or self.radar_tests.summary())
 
     def radar_drive(self, route: str) -> dict:
         if not ROUTE_RE.fullmatch(route):
             raise WebError(404, 'unknown_drive', 'Unknown drive.')
-        return drive_detail(self.repo, self.radar_folders(), route, self.settings.radar_payload())
+        return drive_detail(self.repo, self.radar_folders(), route, self.calibration())
 
     def radar_picture(self, segment: str, t_ms: int) -> bytes:
         folder = self.radar_folders().get(segment) if SEGMENT_PATH_RE.fullmatch(segment) else None
@@ -292,34 +305,86 @@ class App:
             recording['copied'] = all((here / name / 'rlog.zst').is_file() for name in names)
         return {'recordings': recordings}
 
+    def _follow_tests(self) -> dict:
+        """After a test was added, left out, used again or deleted (the calibration lock is held): when the
+        calibration comes from the tests, or there is none and nothing was typed, it becomes the means of the
+        kept tests at once; with no test kept any more it is cleared. Numbers typed by hand are never touched. A
+        car set as having no radar stays so until a test is kept: then it has one after all."""
+        tests = self.radar_tests.summary()
+        source = self.settings.radar_state()['source']
+        if source in ('tests', None) or (source == NO_RADAR and tests['kept']):
+            if tests['kept']:
+                changed = self.settings.set_radar_from_tests(tests['radar_to_camera_m'], tests['correction_m'],
+                                                             kept_ids(tests))
+            else:
+                changed = self.settings.set_radar_from_tests(None, None, [])
+            if changed:
+                self.radar_index.clear()
+                print('Radar: calibration follows the tests (' + str(tests['kept']) + ' kept)', flush=True)
+        return tests
+
     def add_radar_test(self, body) -> dict:
-        test = self.radar_tests.add(body, lambda name: load_series(self.repo, name))
+        """POST /api/radar/tests: the test, and the draft it finishes (draft_id) deleted with it."""
+        if not isinstance(body, dict):
+            raise WebError(400, 'invalid_param', 'Send {"segment", "standstill", "tape_radar_m", "tape_comma_m"}.')
+        body = dict(body)
+        draft_id = body.pop('draft_id', None)
+        if draft_id is not None and (not isinstance(draft_id, str) or not DRAFT_ID_RE.fullmatch(draft_id)):
+            raise WebError(400, 'invalid_param', 'draft_id is the id of a test waiting for its recording.')
+        with self._calibration_lock:
+            # Checked first: a test sent twice for one draft is saved once.
+            if draft_id is not None and self.radar_drafts.get(draft_id) is None:
+                raise WebError(404, 'unknown_draft', 'This test is no longer waiting: it was finished or deleted.')
+            test = self.radar_tests.add(body, lambda name: load_series(self.repo, name))
+            if draft_id is not None:
+                self.radar_drafts.remove(draft_id)
+            tests = self._follow_tests()
+            calibration = self.calibration(tests)
         print('Radar: calibration test added', flush=True)
-        return {'test': test, 'tests': self.radar_tests.summary()}
+        return {'test': test, 'tests': tests, 'calibration': calibration}
 
     def change_radar_test(self, test_id: str, body) -> dict:
-        self.radar_tests.change(test_id, body)
-        return {'tests': self.radar_tests.summary()}
+        with self._calibration_lock:
+            self.radar_tests.change(test_id, body)
+            tests = self._follow_tests()
+            calibration = self.calibration(tests)
+        return {'tests': tests, 'calibration': calibration}
 
     def apply_radar_tests(self, body) -> dict:
+        """POST /api/radar/calibration/apply: the means of the kept tests in place of typed numbers."""
         if body:
             raise WebError(400, 'invalid_param', 'Send {}.')
-        summary = self.radar_tests.summary()
-        if not summary['kept']:
-            raise WebError(409, 'no_tests', 'Keep at least one test to calibrate with.')
-        settings = self.settings.set_radar({'radar_to_camera_m': summary['radar_to_camera_m'],
-                                            'radar_correction_m': summary['correction_m']})
-        self.radar_index.clear()
-        print('Radar: calibration set from ' + str(summary['kept']) + ' tests', flush=True)
-        return {'calibration': self.settings.radar_payload(), 'drives': settings}
+        with self._calibration_lock:
+            tests = self.radar_tests.summary()
+            if not tests['kept']:
+                raise WebError(409, 'no_tests', 'Keep at least one test to calibrate with.')
+            self.settings.set_radar_from_tests(tests['radar_to_camera_m'], tests['correction_m'], kept_ids(tests))
+            self.radar_index.clear()
+            calibration = self.calibration(tests)
+        print('Radar: calibration set from ' + str(tests['kept']) + ' tests', flush=True)
+        return {'calibration': calibration}
+
+    def add_radar_draft(self, body) -> dict:
+        draft = self.radar_drafts.add(body)
+        print('Radar: test saved for later, waiting for its recording', flush=True)
+        return {'draft': draft, 'drafts': self.radar_drafts.drafts()}
+
+    def change_radar_draft(self, draft_id: str, body) -> dict:
+        self.radar_drafts.change(draft_id, body)
+        print('Radar: waiting test deleted', flush=True)
+        return {'drafts': self.radar_drafts.drafts()}
 
     def settings_payload(self) -> dict:
         return {'drives': self.settings.payload(), 'code': code_version(self.repo)}
 
     def set_radar(self, body) -> dict:
-        answer = self.settings.set_radar(body)
+        """POST /api/settings/radar: numbers typed by hand (source "typed"), or both cleared."""
+        with self._calibration_lock:
+            answer = self.settings.set_radar(body)
+            self.radar_index.clear()
+            calibration = self.calibration()
         print('Settings: radar calibration changed (' + ', '.join(sorted(body)) + ')', flush=True)
-        return answer
+        return {'drives': answer, 'calibration': calibration}
 
     def choose_drives(self, body) -> dict:
         answer = self.settings.choose(body)
@@ -532,7 +597,8 @@ def make_handler(app: App):
                     return
                 self._send(200, 'image/jpeg', picture.read_bytes(), extra=[('Cache-Control', 'private, max-age=86400')])
                 return
-            if path.startswith(('/api/run/', '/api/settings/', '/api/radar/tests', '/api/radar/calibration')) \
+            if path.startswith(('/api/run/', '/api/settings/', '/api/radar/tests', '/api/radar/calibration',
+                                '/api/radar/drafts')) \
                     or path in AUTH_ROUTES \
                     or re.fullmatch(r'/api/jobs/[^/]+/stop', path):
                 self._problem(405, 'method_not_allowed', 'Use POST.', True)
@@ -548,8 +614,10 @@ def make_handler(app: App):
             tests = path == '/api/radar/tests'
             test = re.fullmatch(r'/api/radar/tests/([0-9a-f]{12})', path)
             apply = path == '/api/radar/calibration/apply'
+            drafts = path == '/api/radar/drafts'
+            draft = re.fullmatch(r'/api/radar/drafts/([0-9a-f]{12})', path)
             auth = path in AUTH_ROUTES
-            if not any((run, stop, drives, radar, tests, test, apply, auth)):
+            if not any((run, stop, drives, radar, tests, test, apply, drafts, draft, auth)):
                 self._problem(404, 'not_found', 'Invalid address.', True)
                 return
             # Same origin and JSON only: no other site and no HTML form can start a job.
@@ -573,13 +641,17 @@ def make_handler(app: App):
                 print('Job stopped from the site: ' + describe(job), flush=True)
                 self._json(200, {'ok': True, 'job': job})
             elif radar:
-                self._json(200, {'ok': True, 'drives': app.set_radar(body)})
+                self._json(200, {'ok': True, **app.set_radar(body)})
             elif tests:
                 self._json(200, {'ok': True, **app.add_radar_test(body)})
             elif test:
                 self._json(200, {'ok': True, **app.change_radar_test(test.group(1), body)})
             elif apply:
                 self._json(200, {'ok': True, **app.apply_radar_tests(body)})
+            elif drafts:
+                self._json(200, {'ok': True, **app.add_radar_draft(body)})
+            elif draft:
+                self._json(200, {'ok': True, **app.change_radar_draft(draft.group(1), body)})
             else:
                 self._json(200, {'ok': True, 'drives': app.choose_drives(body)})
 

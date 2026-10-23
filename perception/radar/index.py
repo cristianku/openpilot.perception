@@ -51,7 +51,14 @@ def cached(out: Path, folder: Path) -> dict | None:
         data = json.loads(path.read_text(encoding='utf-8'))
     except (OSError, ValueError):
         return None
-    return data if data.get('stamp') == stamp_of(log) else None
+    if not isinstance(data, dict):
+        return None
+    stamp, current = data.get('stamp'), stamp_of(log)
+    # Kept before the video was part of the stamp: the series itself says which video it was read with, so a
+    # video that arrived since is still noticed and the 300 drives already read are not read again.
+    if isinstance(stamp, dict) and 'video' not in stamp:
+        stamp = dict(stamp, video=data.get('video'))
+    return data if stamp == current else None
 
 
 def index_one(folder: Path, out: Path) -> str:
