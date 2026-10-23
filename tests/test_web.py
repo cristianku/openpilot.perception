@@ -118,14 +118,19 @@ class RadarSetting(unittest.TestCase):
         self.settings = Settings(Path(self.directory.name))
 
     def test_set_round_and_clear(self):
-        self.assertIsNone(self.settings.radar_to_camera_m())
-        self.assertEqual(self.settings.set_radar({'radar_to_camera_m': 1.604})['radar_to_camera_m'], 1.6)
-        self.assertEqual(Settings(Path(self.directory.name)).radar_to_camera_m(), 1.6)
-        self.assertIsNone(self.settings.set_radar({'radar_to_camera_m': None})['radar_to_camera_m'])
+        self.assertEqual(self.settings.radar_payload(), {'radar_to_camera_m': None, 'radar_correction_m': 0.0,
+                                                         'radar_to_reference_m': None})
+        answer = self.settings.set_radar({'radar_to_camera_m': 1.504, 'radar_correction_m': -0.03})
+        self.assertEqual((answer['radar_to_camera_m'], answer['radar_correction_m'], answer['radar_to_reference_m']),
+                         (1.5, -0.03, 1.47))
+        self.assertEqual(Settings(Path(self.directory.name)).radar_payload()['radar_to_reference_m'], 1.47)
+        # One value alone keeps the other.
+        self.assertEqual(self.settings.set_radar({'radar_correction_m': None})['radar_to_reference_m'], 1.5)
+        self.assertIsNone(self.settings.set_radar({'radar_to_camera_m': None})['radar_to_reference_m'])
 
     def test_refused(self):
         for body in ({'radar_to_camera_m': -0.1}, {'radar_to_camera_m': 9}, {'radar_to_camera_m': True},
-                     {'radar_to_camera_m': '1.6'}, {'offset': 1.6}, []):
+                     {'radar_to_camera_m': '1.6'}, {'radar_correction_m': 2}, {'offset': 1.6}, {}, []):
             with self.assertRaises(WebError):
                 self.settings.set_radar(body)
         self.assertIsNone(self.settings.radar_to_camera_m())
@@ -360,9 +365,9 @@ class Pages(ServerTestCase):
         self.assertEqual((meta['kind'], meta['segments'], meta['routes']), ('geometry_audit', 6, 2))
 
     def test_radar_setting_from_the_page(self):
-        response, body = self.post('/api/settings/radar', {'radar_to_camera_m': 1.6})
+        response, body = self.post('/api/settings/radar', {'radar_to_camera_m': 1.5, 'radar_correction_m': -0.03})
         self.assertEqual(response.status, 200, body)
-        self.assertEqual(json.loads(self.request('GET', '/api/status')[1])['radar_to_camera_m'], 1.6)
+        self.assertEqual(json.loads(self.request('GET', '/api/status')[1])['radar']['radar_to_reference_m'], 1.47)
         self.assertEqual(self.post('/api/settings/radar', {'radar_to_camera_m': 1.6},
                                    {'Origin': 'http://evil.example'})[0].status, 403)
         self.assertEqual(self.post('/api/settings/radar', {'radar_to_camera_m': 1.6}, auth=False)[0].status, 401)

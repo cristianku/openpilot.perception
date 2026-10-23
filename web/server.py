@@ -231,15 +231,14 @@ class App:
                     'sizes': {name: min(size, drives['counts']['ready']) if size else drives['counts']['ready']
                               for name, size in SIZES.items()}},
                 'audit_jobs': audit_jobs(), 'latest': latest_by_kind(self.results.results()),
-                'radar_to_camera_m': self.settings.radar_to_camera_m()}
+                'radar': self.settings.radar_payload()}
 
     def settings_payload(self) -> dict:
         return {'drives': self.settings.payload(), 'code': code_version(self.repo)}
 
     def set_radar(self, body) -> dict:
         answer = self.settings.set_radar(body)
-        print('Settings: radar to camera distance ' + ('cleared' if answer['radar_to_camera_m'] is None
-                                                       else 'set'), flush=True)
+        print('Settings: radar calibration changed (' + ', '.join(sorted(body)) + ')', flush=True)
         return answer
 
     def choose_drives(self, body) -> dict:

@@ -322,8 +322,9 @@
   function renderPlan() {
     const latest = status.latest || {};
     const running = new Set(status.jobs.filter((job) => job.state === 'running').map((job) => job.action));
-    const offset = status.radar_to_camera_m;
-    if (same('plan', [latest, Array.from(running), offset])) return;
+    const radar = status.radar || {};
+    const offset = radar.radar_to_reference_m;
+    if (same('plan', [latest, Array.from(running), radar])) return;
     const list = byId('plan');
     list.replaceChildren();
     const steps = [['geometry_audit', 'Check the car\'s motion'], ['mono_baseline', 'Measure a ready-made depth model']];
@@ -342,7 +343,7 @@
     });
     const where = offset === null || offset === undefined
       ? ' Set in Settings how far the comma sits behind the radar.'
-      : ' The comma sits ' + offset.toFixed(2) + ' m behind the radar: that is added to every radar distance.';
+      : ' ' + radarSentence(radar);
     list.appendChild(planStep(2, 'Distances from the car\'s radar', 'todo', 'waiting for drives',
       'The radar of the car measures the car ahead in our lane: the real ruler for the camera. It starts with the '
       + 'drives recorded with openpilot longitudinal off on the branch that logs it.' + where,
@@ -859,26 +860,44 @@
   }
 
   // -- settings: drives --------------------------------------------------------------------------
+  function radarSentence(radar) {
+    if (!radar || radar.radar_to_reference_m === null || radar.radar_to_reference_m === undefined) return '';
+    const correction = Math.round(radar.radar_correction_m * 100);
+    return 'Distance from the comma = radar reading ' + (correction < 0 ? '− ' : '+ ') + Math.abs(correction) + ' cm + '
+      + radar.radar_to_camera_m.toFixed(2) + ' m: in all, the radar reading + ' + radar.radar_to_reference_m.toFixed(2) + ' m.';
+  }
   function renderRadar() {
     const settings = data.settings;
-    if (!settings || byId('radar-offset') === document.activeElement) return;
-    const value = settings.drives.radar_to_camera_m;
-    byId('radar-offset').value = value === null || value === undefined ? '' : value.toFixed(2);
+    if (!settings) return;
+    const radar = settings.drives;
+    if (byId('radar-offset') !== document.activeElement) {
+      byId('radar-offset').value = radar.radar_to_camera_m === null ? '' : radar.radar_to_camera_m.toFixed(2);
+    }
+    if (byId('radar-correction') !== document.activeElement) {
+      byId('radar-correction').value = radar.radar_correction_m ? String(Math.round(radar.radar_correction_m * 100)) : '';
+    }
+    byId('radar-total').textContent = radarSentence(radar);
   }
   byId('btn-radar-save').addEventListener('click', async () => {
     const reason = byId('radar-reason');
-    const text = byId('radar-offset').value.trim().replace(',', '.');
-    const value = text === '' ? null : Number(text);
+    const offsetText = byId('radar-offset').value.trim().replace(',', '.');
+    const correctionText = byId('radar-correction').value.trim().replace(',', '.').replace('−', '-');
+    const offset = offsetText === '' ? null : Number(offsetText);
+    const correction = correctionText === '' ? null : Number(correctionText) / 100;
     reason.textContent = '';
-    if (value !== null && (!isFinite(value) || value < 0 || value > 5)) {
-      reason.textContent = 'Between 0 and 5 m, for example 1.60.';
+    if (offset !== null && (!isFinite(offset) || offset < 0 || offset > 5)) {
+      reason.textContent = 'From the radar to the comma: between 0 and 5 m, for example 1.50.';
+      return;
+    }
+    if (correction !== null && (!isFinite(correction) || correction < -1 || correction > 1)) {
+      reason.textContent = 'Correction: between −100 and 100 cm, for example −3.';
       return;
     }
     try {
-      const answer = await post('/api/settings/radar', {radar_to_camera_m: value});
+      const answer = await post('/api/settings/radar', {radar_to_camera_m: offset, radar_correction_m: correction});
       data.settings.drives = answer.drives;
       renderRadar();
-      toast(value === null ? 'Radar distance cleared.' : 'Saved: the comma is ' + value.toFixed(2) + ' m behind the radar.');
+      toast(offset === null ? 'Radar values cleared.' : 'Saved. ' + radarSentence(answer.drives));
       refreshStatus();
     } catch (error) {
       reason.textContent = error.message;

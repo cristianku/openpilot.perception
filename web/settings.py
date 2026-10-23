@@ -2,10 +2,14 @@
 experiments read, and where the car's radar sits. The page sees the folders by name and id (web/status.py),
 never by path.
 
-The radar measures from its own position, the comma from the windshield: `radar_to_camera_m` is how far the
-comma sits behind the radar along the car, so that radar distance + radar_to_camera_m = distance from the
-comma (perception.association.AssociationConfig.radar_to_reference_m). It belongs to one car, measured on it,
-so it is a setting of this server and never a constant of the code. None until it is set.
+The car's radar, two values measured on the car (a setting of this server, never a constant of the code):
+  radar_to_camera_m   how far the comma sits behind the radar along the car (with a tape, e.g. from a wall:
+                      comma to wall minus radar to wall);
+  radar_correction_m  what to add to the radar's own reading to get the distance from the point measured with
+                      the tape (the radar's zero: a sensor behind the bumper skin, or an offset of the car's
+                      radar), from the known-distance tests; 0 until it is known.
+Distance from the comma = radar reading + radar_correction_m + radar_to_camera_m: the sum is
+perception.association.AssociationConfig.radar_to_reference_m. None until the distance is set.
 
 PERCEPTION_DATA_DIR (environment, or the .env of this clone written by install.sh) adds a folder to the
 choices and is the default when nothing was chosen on the page yet.
@@ -23,6 +27,9 @@ from web.status import SOURCE_ID_RE, drives_summary, segment_rows, source_candid
 DATA_ENV = 'PERCEPTION_DATA_DIR'
 # A comma behind the radar of its own car: between the bumper and the windshield.
 RADAR_TO_CAMERA_RANGE_M = (0.0, 5.0)
+# The radar's zero, against a tape: a few centimetres to a few tens.
+RADAR_CORRECTION_RANGE_M = (-1.0, 1.0)
+RADAR_KEYS = {'radar_to_camera_m': RADAR_TO_CAMERA_RANGE_M, 'radar_correction_m': RADAR_CORRECTION_RANGE_M}
 
 
 def env_value(repo: Path, key: str) -> str:
@@ -73,29 +80,48 @@ class Settings:
                 return candidate, candidates
         return (candidates[0] if candidates else None), candidates
 
-    def radar_to_camera_m(self) -> float | None:
-        value = self._saved().get('radar_to_camera_m')
-        low, high = RADAR_TO_CAMERA_RANGE_M
+    def _radar_value(self, key: str) -> float | None:
+        value = self._saved().get(key)
+        low, high = RADAR_KEYS[key]
         if isinstance(value, (int, float)) and not isinstance(value, bool) and low <= value <= high:
             return float(value)
         return None
 
+    def radar_to_camera_m(self) -> float | None:
+        return self._radar_value('radar_to_camera_m')
+
+    def radar_correction_m(self) -> float:
+        value = self._radar_value('radar_correction_m')
+        return 0.0 if value is None else value
+
+    def radar_payload(self) -> dict:
+        """The two values and their sum, radar reading -> distance from the comma (None without the distance)."""
+        to_camera = self.radar_to_camera_m()
+        correction = self.radar_correction_m()
+        total = None if to_camera is None else round(to_camera + correction, 2)
+        return {'radar_to_camera_m': to_camera, 'radar_correction_m': correction, 'radar_to_reference_m': total}
+
     def set_radar(self, body) -> dict:
-        """{"radar_to_camera_m": metres} sets it (to the centimetre), {"radar_to_camera_m": null} clears it."""
-        if not isinstance(body, dict) or set(body) != {'radar_to_camera_m'}:
-            raise WebError(400, 'invalid_param', 'Send {"radar_to_camera_m": <metres> or null}.')
-        value = body['radar_to_camera_m']
-        low, high = RADAR_TO_CAMERA_RANGE_M
-        if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
-                                  or not low <= value <= high):
-            raise WebError(400, 'invalid_param', 'The distance from the radar to the comma must be between '
-                           + str(low) + ' and ' + str(high) + ' m.')
+        """{"radar_to_camera_m": metres | null, "radar_correction_m": metres | null}, either or both: each is
+        kept to the centimetre; null clears it."""
+        if not isinstance(body, dict) or not body or set(body) - set(RADAR_KEYS):
+            raise WebError(400, 'invalid_param', 'Send {"radar_to_camera_m": <metres> or null, '
+                           '"radar_correction_m": <metres> or null}.')
+        for key, value in body.items():
+            low, high = RADAR_KEYS[key]
+            if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
+                                      or not low <= value <= high):
+                what = 'The distance from the radar to the comma' if key == 'radar_to_camera_m' \
+                    else 'The correction of the radar reading'
+                raise WebError(400, 'invalid_param', what + ' must be between ' + str(low) + ' and ' + str(high)
+                               + ' m.')
         with self._lock:
             saved = self._saved()
-            if value is None:
-                saved.pop('radar_to_camera_m', None)
-            else:
-                saved['radar_to_camera_m'] = round(float(value), 2)
+            for key, value in body.items():
+                if value is None:
+                    saved.pop(key, None)
+                else:
+                    saved[key] = round(float(value), 2)
             write_private(self.path, json.dumps(saved, indent=1))
         return self.payload()
 
@@ -107,7 +133,7 @@ class Settings:
                     'chosen': chosen is not None and candidate['id'] == chosen['id']}
             item.update(drives_summary(segment_rows(candidate['path'])))
             sources.append(item)
-        return {'sources': sources, 'radar_to_camera_m': self.radar_to_camera_m()}
+        return {'sources': sources, **self.radar_payload()}
 
     def choose(self, body) -> dict:
         if not isinstance(body, dict) or set(body) != {'drives'} or not isinstance(body['drives'], str) \
