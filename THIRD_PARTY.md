@@ -16,6 +16,17 @@ license; check it again before adding or redistributing anything.
 | [safetensors](https://github.com/huggingface/safetensors) (optional) | reading openpilot.distill's `localizer.safetensors` | Apache-2.0 |
 | [pycapnp](https://github.com/capnproto/pycapnp) (tests) | the synthetic `carState` versions | BSD-2-Clause |
 
+## Fetched at pinned versions (not vendored)
+
+| Component | Used for | License | Pin |
+| --- | --- | --- | --- |
+| [Depth Anything V2](https://github.com/DepthAnything/Depth-Anything-V2) `metric_depth` code | the frozen monocular baseline (`perception/models/depth_anything.py`) | Apache-2.0 | commit `a561b849ebae10a6f5ef49e26c83cbbcd36c71bf` |
+| [Depth Anything V2 Metric VKITTI Small](https://huggingface.co/depth-anything/Depth-Anything-V2-Metric-VKITTI-Small) weights | same | Apache-2.0 (Small only: Base/Large/Giant are CC-BY-NC-4.0 for the project) | revision `c725b8589bdf6ab04072cab74c0467830db80d6d`, SHA-256 `9203e538d35255c90dda4b7fedb47ff33fe725497bcca3b1e53b3a65ee63f0cb` |
+
+Both are downloaded on first use into `~/.cache/openpilot-perception`. The weights were trained on Virtual
+KITTI 2, whose scenes are cloned from KITTI tracking sequences (KITTI is CC-BY-NC-SA 3.0): a KITTI-based
+benchmark is not independent of this checkpoint.
+
 ## Excluded
 
 ManyDepth and Monodepth2 (Niantic): non-commercial licenses, "Patent Pending". No code or weights from them.
@@ -23,7 +34,7 @@ An independent implementation of a published method is not, by itself, free of p
 
 ## Models and weights
 
-None yet. Any pretrained model added later (backbone, depth or detection network) must be listed
+Only the Depth Anything V2 Small checkpoint above. Any pretrained model added later (backbone, depth or detection network) must be listed
 here with its license and source before use; weights with a non-commercial or unclear license
 must not be published from this repository.
 

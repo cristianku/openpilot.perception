@@ -15,6 +15,8 @@ dependencies = [
 viz = ["opencv-python-headless"]
 # The geometry audit (perception.audit.geometry_audit); it also needs ffmpeg on the PATH.
 audit = ["opencv-python-headless", "safetensors"]
+# The frozen monocular baseline (perception.experiments.mono_baseline): weights from Hugging Face.
+baseline = ["opencv-python-headless", "safetensors", "huggingface-hub"]
 
 [dependency-groups]
 dev = [

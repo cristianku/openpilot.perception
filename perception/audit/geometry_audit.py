@@ -114,22 +114,25 @@ class Poses:
         return float(np.linalg.norm([np.interp(time_s, self.t, self.velocity[:, i]) for i in range(3)]))
 
 
-def read_frames(video: Path, indices: list[int], width: int, height: int) -> dict[int, np.ndarray]:
-    """Grey frames of an HEVC file by index (decode order = display order: no B-frames). ffmpeg decodes the
-    stream once on the CPU; only the wanted frames are kept, and it stops after the last one."""
+def read_frames(video: Path, indices: list[int], width: int, height: int,
+                colour: bool = False) -> dict[int, np.ndarray]:
+    """Frames of an HEVC file by index (decode order = display order: no B-frames), grey or BGR (colour).
+    ffmpeg decodes the stream once on the CPU; only the wanted frames are kept, and it stops after the last."""
     wanted = set(indices)
     last = max(wanted)
-    size = width * height
+    channels = 3 if colour else 1
+    size = width * height * channels
     frames: dict[int, np.ndarray] = {}
-    process = subprocess.Popen(['ffmpeg', '-v', 'error', '-i', str(video), '-f', 'rawvideo', '-pix_fmt', 'gray', '-'],
-                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    process = subprocess.Popen(['ffmpeg', '-v', 'error', '-i', str(video), '-f', 'rawvideo', '-pix_fmt',
+                                'bgr24' if colour else 'gray', '-'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     try:
         for index in range(last + 1):
             raw = process.stdout.read(size)
             if len(raw) < size:
                 break
             if index in wanted:
-                frames[index] = np.frombuffer(raw, np.uint8).reshape(height, width)
+                shape = (height, width, 3) if colour else (height, width)
+                frames[index] = np.frombuffer(raw, np.uint8).reshape(shape)
     finally:
         process.kill()
         process.wait()

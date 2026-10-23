@@ -27,7 +27,7 @@ themselves were delivered outside the repository (23 October 2026).
 | R2-I1: a calibration stayed in force after an uncalibrated message | **Fixed** (`comma_log.CommaLog.calibration_at`, tests in `tests/test_comma_log.py`). |
 | R2-I2: metrics dropped missing predictions | **Fixed** (`metrics.DistanceErrors`: eligible / predicted / missing, shares within 1/2/5 m over all eligible labels, MAE, MedAE, RMSE, AbsRel, disjoint bands). Coverage of the radar targets comes with the manifest. |
 | R2-I3: tuning on the test split | **Accepted:** development for association and calibration, validation for model choice, test for the final comparison only; whole sessions isolated; no test images in photometric fine-tuning. |
-| R2-I4: Depth Anything preprocessing | **Accepted** in the Experiment 1 gate; scale variants B0 (zero-shot), B1 (one scale factor fitted on development drives only), B2 (focal normalisation, chosen on validation). |
+| R2-I4: Depth Anything preprocessing | **Done for B0/B1** ([Experiment 1](experiment-1.md)): fixed official preprocessing, pinned code and weights. On the proxy, held-out routes: B0 AbsRel 0.309, B1 0.281 (scale 0.924 from development routes); depth compressed (×1.56 at 10–30 m, ×0.67 at 60–80 m). B2 (focal normalisation) not run. |
 | R2-I5, I6: sparse far planes, photometric and uncertainty checks | **Accepted** for Experiment 3 and 2. |
 | R2 minor: quantisation of the signals (0.25 m, 1 m, 0.02 m/s), COCO has no van | **Accepted:** continuity tests tolerate quantisation; van is not a supervised class. |
 
