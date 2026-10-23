@@ -94,7 +94,11 @@ with motion) the curve rule leaves the label possible in 94 % of the frames for 
 
 The radar origin is not the camera: `radar_to_reference_m` (radar distance + offset = x in the
 calibrated frame) must be given for the car. openpilot's radard uses 1.52 m for every car
-(`OPENPILOT_RADAR_TO_CAMERA_M`); it is a generic value, not a measurement.
+(`OPENPILOT_RADAR_TO_CAMERA_M`); it is a generic value, not a measurement. The site keeps the measured
+value of the car as a setting of the server (Settings › Your car's radar: how far the comma sits behind
+the radar, along the car). On the author's car, radar behind the front bumper, the comma is 1.60 m
+behind it: a radar distance of 20.00 m is 21.60 m from the comma. Where the radar's own zero lies is
+checked at known separations before it becomes a label.
 
 ## Kept apart
 

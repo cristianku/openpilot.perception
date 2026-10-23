@@ -111,6 +111,26 @@ class Drives(unittest.TestCase):
                 settings.choose(bad)
 
 
+class RadarSetting(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.settings = Settings(Path(self.directory.name))
+
+    def test_set_round_and_clear(self):
+        self.assertIsNone(self.settings.radar_to_camera_m())
+        self.assertEqual(self.settings.set_radar({'radar_to_camera_m': 1.604})['radar_to_camera_m'], 1.6)
+        self.assertEqual(Settings(Path(self.directory.name)).radar_to_camera_m(), 1.6)
+        self.assertIsNone(self.settings.set_radar({'radar_to_camera_m': None})['radar_to_camera_m'])
+
+    def test_refused(self):
+        for body in ({'radar_to_camera_m': -0.1}, {'radar_to_camera_m': 9}, {'radar_to_camera_m': True},
+                     {'radar_to_camera_m': '1.6'}, {'offset': 1.6}, []):
+            with self.assertRaises(WebError):
+                self.settings.set_radar(body)
+        self.assertIsNone(self.settings.radar_to_camera_m())
+
+
 class Results(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -338,6 +358,14 @@ class Pages(ServerTestCase):
         self.assertEqual(len(folders), 6)
         meta = json.loads((run_dir / 'experiment.json').read_text())
         self.assertEqual((meta['kind'], meta['segments'], meta['routes']), ('geometry_audit', 6, 2))
+
+    def test_radar_setting_from_the_page(self):
+        response, body = self.post('/api/settings/radar', {'radar_to_camera_m': 1.6})
+        self.assertEqual(response.status, 200, body)
+        self.assertEqual(json.loads(self.request('GET', '/api/status')[1])['radar_to_camera_m'], 1.6)
+        self.assertEqual(self.post('/api/settings/radar', {'radar_to_camera_m': 1.6},
+                                   {'Origin': 'http://evil.example'})[0].status, 403)
+        self.assertEqual(self.post('/api/settings/radar', {'radar_to_camera_m': 1.6}, auth=False)[0].status, 401)
 
     def test_refused_without_drives(self):
         source = self.app.settings.drives_folder()[0]['path']

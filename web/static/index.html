@@ -192,6 +192,14 @@
       <div class="source-list" id="sources" role="radiogroup" aria-labelledby="sources-title"></div>
       <p class="empty" id="sources-empty" hidden>No openpilot.distill found on this server. Install it next to this site: its drives show up here by themselves.</p>
     </div>
+    <div class="card" id="radar-card">
+      <h2>Your car's radar</h2>
+      <p class="lead">The radar measures from the front of the car, the comma from the windshield. Measure once, along the car, how far the comma sits behind the radar: the radar distance plus this is the distance from the comma. Leave it empty when the car has no radar.</p>
+      <div class="form-grid wide">
+        <label class="field">From the radar to the comma (m)<input type="number" id="radar-offset" min="0" max="5" step="0.01" inputmode="decimal" placeholder="for example 1.60"></label>
+      </div>
+      <div class="buttons"><div class="action"><button class="btn primary" type="button" id="btn-radar-save">Save</button><div class="reason" id="radar-reason" aria-live="polite"></div></div></div>
+    </div>
     <div class="card" id="admin-card">
       <h2>Administrator</h2>
       <div class="account-row">

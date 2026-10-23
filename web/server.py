@@ -230,10 +230,17 @@ class App:
                     'source': drives['source'], 'counts': drives['counts'],
                     'sizes': {name: min(size, drives['counts']['ready']) if size else drives['counts']['ready']
                               for name, size in SIZES.items()}},
-                'audit_jobs': audit_jobs(), 'latest': latest_by_kind(self.results.results())}
+                'audit_jobs': audit_jobs(), 'latest': latest_by_kind(self.results.results()),
+                'radar_to_camera_m': self.settings.radar_to_camera_m()}
 
     def settings_payload(self) -> dict:
         return {'drives': self.settings.payload(), 'code': code_version(self.repo)}
+
+    def set_radar(self, body) -> dict:
+        answer = self.settings.set_radar(body)
+        print('Settings: radar to camera distance ' + ('cleared' if answer['radar_to_camera_m'] is None
+                                                       else 'set'), flush=True)
+        return answer
 
     def choose_drives(self, body) -> dict:
         answer = self.settings.choose(body)
@@ -439,8 +446,9 @@ def make_handler(app: App):
             run = re.fullmatch(r'/api/run/([a-z_]+)', path)
             stop = re.fullmatch(r'/api/jobs/([^/]+)/stop', path)
             drives = path == '/api/settings/drives'
+            radar = path == '/api/settings/radar'
             auth = path in AUTH_ROUTES
-            if not run and not stop and not drives and not auth:
+            if not run and not stop and not drives and not radar and not auth:
                 self._problem(404, 'not_found', 'Invalid address.', True)
                 return
             # Same origin and JSON only: no other site and no HTML form can start a job.
@@ -463,6 +471,8 @@ def make_handler(app: App):
                 job = app.jobs.stop(job_id)
                 print('Job stopped from the site: ' + describe(job), flush=True)
                 self._json(200, {'ok': True, 'job': job})
+            elif radar:
+                self._json(200, {'ok': True, 'drives': app.set_radar(body)})
             else:
                 self._json(200, {'ok': True, 'drives': app.choose_drives(body)})
 

@@ -192,7 +192,7 @@
   function renderTab() {
     if (currentTab === 'experiments') renderWizard();
     else if (currentTab === 'results') renderResults();
-    else if (currentTab === 'settings') { renderSources(); renderAdmin(); }
+    else if (currentTab === 'settings') { renderSources(); renderRadar(); renderAdmin(); }
     updateButtons();
   }
 
@@ -322,7 +322,8 @@
   function renderPlan() {
     const latest = status.latest || {};
     const running = new Set(status.jobs.filter((job) => job.state === 'running').map((job) => job.action));
-    if (same('plan', [latest, Array.from(running)])) return;
+    const offset = status.radar_to_camera_m;
+    if (same('plan', [latest, Array.from(running), offset])) return;
     const list = byId('plan');
     list.replaceChildren();
     const steps = [['geometry_audit', 'Check the car\'s motion'], ['mono_baseline', 'Measure a ready-made depth model']];
@@ -339,9 +340,13 @@
           planButton('Run it', () => { chooseKind(kind); showTab('experiments'); })));
       }
     });
+    const where = offset === null || offset === undefined
+      ? ' Set in Settings how far the comma sits behind the radar.'
+      : ' The comma sits ' + offset.toFixed(2) + ' m behind the radar: that is added to every radar distance.';
     list.appendChild(planStep(2, 'Distances from the car\'s radar', 'todo', 'waiting for drives',
       'The radar of the car measures the car ahead in our lane: the real ruler for the camera. It starts with the '
-      + 'drives recorded with openpilot longitudinal off on the branch that logs it.'));
+      + 'drives recorded with openpilot longitudinal off on the branch that logs it.' + where,
+      offset === null || offset === undefined ? planButton('Set it', () => showTab('settings')) : null));
     list.appendChild(planStep(3, 'A network that sees in 3D over time', 'muted', 'not started',
       'Several frames plus the car\'s motion give distance from parallax, the way people judge it. It is built only '
       + 'once it beats the depth baseline on the radar distances.'));
@@ -854,6 +859,32 @@
   }
 
   // -- settings: drives --------------------------------------------------------------------------
+  function renderRadar() {
+    const settings = data.settings;
+    if (!settings || byId('radar-offset') === document.activeElement) return;
+    const value = settings.drives.radar_to_camera_m;
+    byId('radar-offset').value = value === null || value === undefined ? '' : value.toFixed(2);
+  }
+  byId('btn-radar-save').addEventListener('click', async () => {
+    const reason = byId('radar-reason');
+    const text = byId('radar-offset').value.trim().replace(',', '.');
+    const value = text === '' ? null : Number(text);
+    reason.textContent = '';
+    if (value !== null && (!isFinite(value) || value < 0 || value > 5)) {
+      reason.textContent = 'Between 0 and 5 m, for example 1.60.';
+      return;
+    }
+    try {
+      const answer = await post('/api/settings/radar', {radar_to_camera_m: value});
+      data.settings.drives = answer.drives;
+      renderRadar();
+      toast(value === null ? 'Radar distance cleared.' : 'Saved: the comma is ' + value.toFixed(2) + ' m behind the radar.');
+      refreshStatus();
+    } catch (error) {
+      reason.textContent = error.message;
+    }
+  });
+
   function renderSources() {
     const settings = data.settings;
     if (!settings) return;
