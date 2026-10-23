@@ -32,7 +32,11 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from web.actions import ACTIONS, SIZES, audit_jobs, build_job
 from web.auth import SESSION_MAX_SECONDS, AdminAuth
 from web.common import REPO, WebError, render_problem, short_text, strict_json_loads
+from web.comma import Comma, comma_host
 from web.jobs import JOB_ID_RE, JobManager, describe
+from web.pictures import picture
+from web.radar import (RadarIndex, RadarTests, drive_detail, frame_for, load_series, not_indexed, recordings_dir,
+                       segment_folders)
 from web.settings import Settings
 from web.status import (Cache, ResultReader, drives_summary, gpu_busy_reason, picture_path, segment_rows,
                         spread_sample, system_info)
@@ -58,6 +62,8 @@ LOGIN_MESSAGE = 'Sign in first.'
 DEFAULT_CSP = "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 PROBLEM_CSP = ("default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; "
                "frame-ancestors 'none'")
+ROUTE_RE = re.compile(r'^(?:[0-9a-f]{18}|[0-9a-f]{8}--[0-9a-f]{10})$')
+SEGMENT_PATH_RE = re.compile(r'^(?:[0-9a-f]{18,24}|[0-9a-f]{8}--[0-9a-f]{10}--[0-9]{1,4})$')
 NO_DRIVES = ('no localized drives on this server yet: download and localize them with openpilot.distill, '
              'or choose another drives folder in Settings')
 
@@ -172,8 +178,11 @@ class App:
         self.jobs = jobs or JobManager(repo, gpu_check=self.gpu_check)
         self.settings = settings or Settings(repo)
         self.results = ResultReader(repo)
+        self.radar_index = RadarIndex(repo)
+        self.radar_tests = RadarTests(repo)
         self._machine = Cache(3.0)
         self._drives = Cache(10.0)
+        self._radar_lock = threading.Lock()
 
     # -- access ------------------------------------------------------------------------------------
     def host_allowed(self, host_header) -> bool:
@@ -233,6 +242,77 @@ class App:
                 'audit_jobs': audit_jobs(), 'latest': latest_by_kind(self.results.results()),
                 'radar': self.settings.radar_payload()}
 
+    # -- radar -------------------------------------------------------------------------------------
+    def radar_folders(self) -> dict:
+        return segment_folders(self.repo, self.drives().get('path'))
+
+    def _radar_job(self, jobs: list[dict]) -> dict | None:
+        return next((job for job in jobs if job['group'] == 'radar' and job['state'] == 'running'), None)
+
+    def radar_payload(self) -> dict:
+        """The Radar page: the calibration and its tests, every drive and recording with its radar, and the
+        reading of new segments, started here by itself when some are not read yet."""
+        folders = self.radar_folders()
+        pending = not_indexed(self.repo, folders)
+        jobs = self.jobs.list_jobs()
+        job = self._radar_job(jobs)
+        if pending and job is None and not any(j['group'] == 'system' and j['state'] == 'running' for j in jobs):
+            with self._radar_lock:
+                try:
+                    job = self.jobs.start(build_job('radar_index', {}, pending))
+                    print('Job started: ' + describe(job), flush=True)
+                except WebError:
+                    job = None
+        calibration = self.settings.radar_payload()
+        return {'calibration': calibration, 'tests': self.radar_tests.summary(),
+                'summary': self.radar_index.drives(folders, calibration), 'pending': len(pending), 'job': job}
+
+    def radar_drive(self, route: str) -> dict:
+        if not ROUTE_RE.fullmatch(route):
+            raise WebError(404, 'unknown_drive', 'Unknown drive.')
+        return drive_detail(self.repo, self.radar_folders(), route, self.settings.radar_payload())
+
+    def radar_picture(self, segment: str, t_ms: int) -> bytes:
+        folder = self.radar_folders().get(segment) if SEGMENT_PATH_RE.fullmatch(segment) else None
+        series = load_series(self.repo, segment) if folder is not None else None
+        found = frame_for(series, t_ms / 1000.0) if series else None
+        if found is None:
+            raise WebError(404, 'no_picture', 'No picture for this moment.')
+        return picture(folder, found[0], found[1], self.repo / 'outputs' / 'web' / 'pictures')
+
+    def comma_recordings(self) -> dict:
+        """The newest recordings on the comma, the short ones first-class: which are already here."""
+        chosen, _ = self.settings.drives_folder()
+        comma = Comma(comma_host(self.repo, chosen['path'].parent if chosen else None))
+        recordings = comma.recordings()
+        here = recordings_dir(self.repo)
+        for recording in recordings:
+            names = [recording['route'] + '--' + str(segment) for segment in recording['segments']]
+            recording['names'] = names
+            recording['copied'] = all((here / name / 'rlog.zst').is_file() for name in names)
+        return {'recordings': recordings}
+
+    def add_radar_test(self, body) -> dict:
+        test = self.radar_tests.add(body, lambda name: load_series(self.repo, name))
+        print('Radar: calibration test added', flush=True)
+        return {'test': test, 'tests': self.radar_tests.summary()}
+
+    def change_radar_test(self, test_id: str, body) -> dict:
+        self.radar_tests.change(test_id, body)
+        return {'tests': self.radar_tests.summary()}
+
+    def apply_radar_tests(self, body) -> dict:
+        if body:
+            raise WebError(400, 'invalid_param', 'Send {}.')
+        summary = self.radar_tests.summary()
+        if not summary['kept']:
+            raise WebError(409, 'no_tests', 'Keep at least one test to calibrate with.')
+        settings = self.settings.set_radar({'radar_to_camera_m': summary['radar_to_camera_m'],
+                                            'radar_correction_m': summary['correction_m']})
+        self.radar_index.clear()
+        print('Radar: calibration set from ' + str(summary['kept']) + ' tests', flush=True)
+        return {'calibration': self.settings.radar_payload(), 'drives': settings}
+
     def settings_payload(self) -> dict:
         return {'drives': self.settings.payload(), 'code': code_version(self.repo)}
 
@@ -263,8 +343,11 @@ class App:
             size = SIZES.get(params.get('size', 'standard')) if isinstance(params, dict) else None
             names = spread_sample(ready, size or len(ready))
             segments = [drives['path'] / name for name in names]
+        if action_id == 'radar_index':
+            folders = self.radar_folders()
+            segments = not_indexed(self.repo, folders) or list(folders.values())
         spec = build_job(action_id, params, segments)
-        if segments is not None:
+        if segments is not None and action.needs_drives:
             def prepare(run_dir: Path, job_id: str) -> None:
                 meta = {'kind': action_id, 'label': action.label, 'job': job_id, 'started': time.time(),
                         'segments': len(segments), 'routes': len({folder.name[:18] for folder in segments}),
@@ -426,6 +509,21 @@ def make_handler(app: App):
                 offset = int(raw_offset) if re.fullmatch(r'[0-9]{1,15}', raw_offset) else 0
                 self._json(200, app.jobs.log(match.group(1), offset))
                 return
+            if path == '/api/radar':
+                self._json(200, app.radar_payload())
+                return
+            match = re.fullmatch(r'/api/radar/drives/([^/]+)', path)
+            if match:
+                self._json(200, app.radar_drive(match.group(1)))
+                return
+            if path == '/api/comma/recordings':
+                self._json(200, app.comma_recordings())
+                return
+            match = re.fullmatch(r'/picture/radar/([^/]+)/([0-9]{1,7})\.jpg', path)
+            if match:
+                self._send(200, 'image/jpeg', app.radar_picture(match.group(1), int(match.group(2))),
+                           extra=[('Cache-Control', 'private, max-age=86400')])
+                return
             match = re.fullmatch(r'/picture/([^/]+)/([^/]+)', path)
             if match:
                 picture = picture_path(app.repo, match.group(1), match.group(2))
@@ -434,7 +532,8 @@ def make_handler(app: App):
                     return
                 self._send(200, 'image/jpeg', picture.read_bytes(), extra=[('Cache-Control', 'private, max-age=86400')])
                 return
-            if path.startswith(('/api/run/', '/api/settings/')) or path in AUTH_ROUTES \
+            if path.startswith(('/api/run/', '/api/settings/', '/api/radar/tests', '/api/radar/calibration')) \
+                    or path in AUTH_ROUTES \
                     or re.fullmatch(r'/api/jobs/[^/]+/stop', path):
                 self._problem(405, 'method_not_allowed', 'Use POST.', True)
                 return
@@ -446,8 +545,11 @@ def make_handler(app: App):
             stop = re.fullmatch(r'/api/jobs/([^/]+)/stop', path)
             drives = path == '/api/settings/drives'
             radar = path == '/api/settings/radar'
+            tests = path == '/api/radar/tests'
+            test = re.fullmatch(r'/api/radar/tests/([0-9a-f]{12})', path)
+            apply = path == '/api/radar/calibration/apply'
             auth = path in AUTH_ROUTES
-            if not run and not stop and not drives and not radar and not auth:
+            if not any((run, stop, drives, radar, tests, test, apply, auth)):
                 self._problem(404, 'not_found', 'Invalid address.', True)
                 return
             # Same origin and JSON only: no other site and no HTML form can start a job.
@@ -472,6 +574,12 @@ def make_handler(app: App):
                 self._json(200, {'ok': True, 'job': job})
             elif radar:
                 self._json(200, {'ok': True, 'drives': app.set_radar(body)})
+            elif tests:
+                self._json(200, {'ok': True, **app.add_radar_test(body)})
+            elif test:
+                self._json(200, {'ok': True, **app.change_radar_test(test.group(1), body)})
+            elif apply:
+                self._json(200, {'ok': True, **app.apply_radar_tests(body)})
             else:
                 self._json(200, {'ok': True, 'drives': app.choose_drives(body)})
 

@@ -238,7 +238,9 @@ class JobManager:
             if job_file.exists() or log_file.exists():
                 raise WebError(409, 'busy', 'A job has just started: try again in a second.')
             run_dir = results_dir(self.repo) / job_id
-            argv = [str(item).replace('{run_dir}', str(run_dir)) for item in spec.argv]
+            radar_dir = self.repo / 'outputs' / 'radar'
+            argv = [str(item).replace('{run_dir}', str(run_dir)).replace('{radar_dir}', str(radar_dir))
+                    for item in spec.argv]
             if spec.prepare is not None:
                 run_dir.mkdir(parents=True, exist_ok=True)
                 spec.prepare(run_dir, job_id)

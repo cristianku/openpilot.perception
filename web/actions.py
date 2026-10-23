@@ -19,7 +19,8 @@ from web.status import GPU_LOCK_FILE
 # How many segments each size takes, spread over every drive; None = all of them.
 SIZES = {'quick': 10, 'standard': 30, 'all': None}
 SIZE_LABELS = {'quick': 'quick look', 'standard': 'standard', 'all': 'every drive'}
-GROUP_NAMES = {'geometry_audit': 'a geometry audit', 'mono_baseline': 'a depth baseline', 'system': 'a code update'}
+GROUP_NAMES = {'geometry_audit': 'a geometry audit', 'mono_baseline': 'a depth baseline', 'system': 'a code update',
+               'radar': 'a reading of the radar'}
 
 
 @dataclass
@@ -34,7 +35,11 @@ ACTIONS = {
     'geometry_audit': Action('Geometry audit', 'geometry_audit', needs_drives=True),
     'mono_baseline': Action('Depth baseline', 'mono_baseline', needs_gpu=True, needs_drives=True),
     'update': Action('Update the code', 'system'),
+    'radar_index': Action('Read the radar', 'radar'),
+    'fetch_recordings': Action('Get recordings from the comma', 'radar'),
 }
+# Recordings copied in one go (the radar tests are a minute each).
+MAX_FETCH = 6
 
 
 @dataclass
@@ -75,6 +80,22 @@ def build_job(action_id: str, params, segments: list[Path] | None = None, python
             raise WebError(400, 'invalid_param', 'Send {}.')
         return JobSpec('update', action.label, action.group, [python, '-m', 'tasks.update'],
                        summary='latest code, libraries, restart of the site')
+    if action_id == 'radar_index':
+        folders = [str(folder) for folder in segments or []]
+        return JobSpec('radar_index', action.label, action.group,
+                       [python, '-m', 'perception.radar.index', *folders, '--out', '{radar_dir}'],
+                       summary=str(len(folders)) + (' segment' if len(folders) == 1 else ' segments') + ' to read')
+    if action_id == 'fetch_recordings':
+        from web.comma import RECORDING_RE
+
+        names = params.get('recordings') if isinstance(params, dict) and set(params) == {'recordings'} else None
+        if not isinstance(names, list) or not 1 <= len(names) <= MAX_FETCH or not all(
+                isinstance(name, str) and RECORDING_RE.fullmatch(name) for name in names):
+            raise WebError(400, 'invalid_param', 'Send {"recordings": ["<route>--<segment>", ...]} (at most '
+                           + str(MAX_FETCH) + ').')
+        return JobSpec('fetch_recordings', action.label, action.group,
+                       [python, '-m', 'tasks.fetch_recordings', *names], params={'recordings': names},
+                       summary=str(len(names)) + (' recording' if len(names) == 1 else ' recordings'))
     size = size_param(params)
     folders = [str(folder) for folder in segments or []]
     routes = len({Path(folder).name[:18] for folder in folders})

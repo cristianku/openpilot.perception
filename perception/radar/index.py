@@ -26,10 +26,19 @@ def log_of(folder: Path) -> Path | None:
     return None
 
 
+VIDEO_NAMES = ('fcamera.hevc', 'qcamera.ts')
+
+
+def video_of(folder: Path) -> str | None:
+    return next((name for name in VIDEO_NAMES if (folder / name).is_file()), None)
+
+
 def stamp_of(log: Path) -> dict:
-    """What identifies a version of a log: its resolved path, size and modification time."""
+    """What identifies a version of a segment: its log (resolved path, size, modification time) and which
+    video it has (a recording's small video can arrive after its log)."""
     stat = log.stat()
-    return {'log': str(log.resolve()), 'size': stat.st_size, 'mtime': int(stat.st_mtime)}
+    return {'log': str(log.resolve()), 'size': stat.st_size, 'mtime': int(stat.st_mtime),
+            'video': video_of(log.parent)}
 
 
 def cached(out: Path, folder: Path) -> dict | None:
@@ -60,7 +69,7 @@ def index_one(folder: Path, out: Path) -> str:
     except Exception as exc:  # a damaged log must not stop the others
         data = {'segment': folder.name, 'error': f'{type(exc).__name__}: {exc}'[:300]}
     data['stamp'] = stamp
-    data['video'] = next((name for name in ('fcamera.hevc', 'qcamera.ts') if (folder / name).is_file()), None)
+    data['video'] = stamp['video']
     out.mkdir(parents=True, exist_ok=True)
     temporary = out / (folder.name + '.json.part')
     temporary.write_text(json.dumps(data, separators=(',', ':')), encoding='utf-8')
