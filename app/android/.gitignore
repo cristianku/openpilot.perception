@@ -1,0 +1,6 @@
+# Build outputs and the local SDK path of the app (helpers/build_android.sh builds it).
+.gradle/
+.kotlin/
+build/
+app/build/
+local.properties

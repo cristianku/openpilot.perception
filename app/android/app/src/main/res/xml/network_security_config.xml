@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- perception-web is plain HTTP on the owner's LAN or ZeroTier (default http://10.10.10.213:8767).
+     A network security config can name hosts only, not address ranges, and the site address is chosen in the
+     app, so the platform cannot know it in advance. The rule "plain HTTP only to the configured site, and only
+     when it is a private address" is therefore enforced by the app itself, at every request:
+       - SiteAddress.parse accepts http:// only for a private IP literal (10/8, 172.16/12, 192.168/16, 100.64/10,
+         169.254/16, loopback, IPv6 ULA and link-local); any other host needs https;
+       - SiteApi sends requests to the configured origin only;
+       - the WebView of the site loads the configured origin only (other pages open in the browser, other
+         requests are blocked);
+       - plain HTTP proves nothing about who answers, so the session goes only to the networks the owner uses
+         the site from, never over mobile data (SiteNetworks.kt).
+     The SSH connection to the comma is not HTTP and is not governed by this file. HTTPS trusts the system
+     certificate authorities only, never ones added by the user. -->
+<network-security-config xmlns:tools="http://schemas.android.com/tools">
+    <base-config cleartextTrafficPermitted="true" tools:ignore="InsecureBaseConfiguration">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

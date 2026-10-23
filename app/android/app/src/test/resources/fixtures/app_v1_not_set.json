@@ -1,0 +1,5 @@
+{"ok": true, "api": "perception-app", "version": 1, "code": "1ccb3fb",
+ "calibration": {"radar_to_camera_m": null, "radar_correction_m": -0.89, "radar_to_reference_m": null, "source": null,
+                 "version": 0, "status": "not_set", "uncertainty_m": null, "tested_m": []},
+ "comma": {"host_key_fingerprints": [], "python": "/usr/local/venv/bin/python", "openpilot": "/data/openpilot"},
+ "label_range_m": [5.0, 30.0]}

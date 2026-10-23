@@ -1,0 +1,6 @@
+{"client_id": "6f1c1f9e-6c7e-4c64-9f43-1d1a9b0e2a11", "created_unix": 1792771200.5, "target": "wall",
+ "tape_radar_m": 1.32, "tape_comma_m": 2.82,
+ "capture": {"started_unix": 1792771170.0, "duration_s": 20.0, "samples": 200, "with_reading": 180, "reading_m": 2.25,
+             "steady_share": 0.98, "histogram": {"2.25": 176, "2.50": 4}, "speed_max_mps": 0.0, "onroad": true},
+ "comma": {"route": "00000134--a5c8197883", "git_commit": "1b6a472a"},
+ "note": ""}

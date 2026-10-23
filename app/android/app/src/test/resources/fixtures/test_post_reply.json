@@ -1,0 +1,6 @@
+{"ok": true,
+ "test": {"id": "a1b2c3d4e5f6", "client_id": "6f1c1f9e-6c7e-4c64-9f43-1d1a9b0e2a11", "target": "wall",
+          "route": "00000134--a5c8197883", "reading_m": 2.25, "tape_radar_m": 1.32, "tape_comma_m": 2.82,
+          "correction_m": -0.93, "kept": true, "created": 1792771260.2},
+ "calibration": {"radar_to_camera_m": 1.5, "radar_correction_m": -0.9, "radar_to_reference_m": 0.6, "source": "tests",
+                 "version": 4, "status": "close_only", "uncertainty_m": 0.07, "tested_m": [0.9, 1.32, 1.32]}}

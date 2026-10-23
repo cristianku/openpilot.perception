@@ -1,0 +1,6 @@
+{"type":"hello","version":1,"git_commit":"1b6a472ae61d2d61866902cb48a5b3ab8bd11d07","git_branch":"psa-torque-sunny-testing","route":"00000134--a5c8197883","segment":"00000134--a5c8197883--0","python":"3.12.3","pid":29729,"radar_fields":true,"max_seconds":1200}
+{"type":"status","onroad":false,"route":"00000134--a5c8197883","segment":"00000134--a5c8197883--0"}
+{"type":"radar","mono_ns":123456789012345,"onroad":true,"v_ego":0.0,"valid":true,"distance_m":2.25,"rel_speed_mps":null,"rel_speed_valid":false,"measured_ns":987654321}
+{"type":"radar","mono_ns":123456889012345,"onroad":true,"v_ego":0.012,"valid":false,"distance_m":null,"rel_speed_mps":null,"rel_speed_valid":false,"measured_ns":null}
+{"type":"bye","reason":"time_limit"}
+{"type":"error","message":"openpilot messaging: ModuleNotFoundError: No module named 'openpilot'"}

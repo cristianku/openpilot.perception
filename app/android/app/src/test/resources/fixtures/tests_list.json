@@ -1,0 +1,8 @@
+{"ok": true, "tests": [
+ {"id": "0a0b0c0d0e0f", "target": "wall", "route": "00000120--1f2e3d4c5b", "reading_m": 1.75, "tape_radar_m": 0.9,
+  "tape_comma_m": 2.4, "correction_m": -0.85, "kept": true, "created": 1792600000.0},
+ {"id": "a1b2c3d4e5f6", "client_id": "6f1c1f9e-6c7e-4c64-9f43-1d1a9b0e2a11", "target": "wall",
+  "route": "00000134--a5c8197883", "reading_m": 2.25, "tape_radar_m": 1.32, "tape_comma_m": 2.82, "correction_m": -0.93,
+  "kept": true, "created": 1792771260.2},
+ {"id": "ffeeddccbbaa", "target": "car", "route": "00000101--0000000000", "reading_m": 11.0, "tape_radar_m": 10.0,
+  "tape_comma_m": 11.5, "correction_m": -1.0, "kept": false, "created": 1792000000.0}]}

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<lint>
+    <!-- A trust-all manager in Bouncy Castle's PKIX jar (its EST client), which sshj brings along; the app never
+         uses it and R8 removes it from the release. Our own code is still checked. -->
+    <issue id="TrustAllX509TrustManager">
+        <ignore path="**/bcpkix-jdk18on-*.jar" />
+    </issue>
+</lint>
