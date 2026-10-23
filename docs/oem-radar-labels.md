@@ -6,8 +6,8 @@ to the car: no model output is connected to vehicle control.
 
 ## Contract with the producer
 
-The car port (today `cristianku/opendbc`, branch `psa-torque-sunny-testing`, `opendbc/car/car.capnp`)
-fills these `carState` fields:
+The car port (today `cristianku/opendbc`, branch `psa-torque-sunny-testing`, commit `6810f033`,
+`opendbc/car/car.capnp` @62–66) fills these `carState` fields:
 
 | Field | Meaning |
 | --- | --- |
@@ -34,6 +34,12 @@ This repository never decodes CAN and knows no car maker: it reads `carState` on
 Checked on a real segment (`…a09`, recorded in dashcam mode before the fields existed): with the
 current schema "schema without the stockRadar fields"; with the producer's `car.capnp`, 5974
 `carState` messages, all "no valid target".
+
+Replaying the CAN of the same segment through the producer's `CarState` (`6810f033`, dashcam
+CarParams) and reading the result with this consumer: 2605 radar measurements, all identical in
+time and distance to an independent decoding of the same frames, 2599 with a relative speed,
+1042 of 1200 fcamera frames aligned (skew at most 23.9 ms, 5.1 ms on average; the others are
+frames without a target).
 
 ## Rules for a radar sample
 
