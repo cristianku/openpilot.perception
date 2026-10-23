@@ -1,0 +1,25 @@
+[project]
+name = "openpilot-perception"
+version = "0.1.0"
+description = "Spatial perception from comma road video, with metric supervision from real sensors"
+readme = "README.md"
+requires-python = ">=3.12.3,<3.13"
+license = {text = "MIT"}
+dependencies = [
+  "numpy>=2.0",
+]
+
+[dependency-groups]
+dev = [
+  "ruff>=0.11",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "C4", "PIE", "UP"]
