@@ -42,3 +42,10 @@ def calibration(log_ns: int, rpy=(0.0, 0.0, 0.0), wide=(0.0, 0.0, 0.0), status: 
 
 def car_state(struct, log_ns: int, **fields) -> Event:
     return Event('carState', log_ns, struct.new_message(vEgo=10.0, **fields))
+
+
+def motion(t_ns: int, speed: float = 10.0, yaw_rate: float = 0.0, valid: bool = True, timestamp: int | None = None):
+    payload = SimpleNamespace(velocityDevice=SimpleNamespace(x=speed, valid=valid),
+                              angularVelocityDevice=SimpleNamespace(z=yaw_rate, valid=True),
+                              timestamp=t_ns if timestamp is None else timestamp)
+    return Event('deviceMotion', t_ns + 3 * MS, payload)

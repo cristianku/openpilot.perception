@@ -63,19 +63,31 @@ the last one logged before the frame; before the first one a frame has none and 
 
 ## Pairing the radar with a detection
 
-One radar target is not a 3D map. Its distance labels a detection
-([`perception/association.py`](../perception/association.py)) only when, in a calibrated frame:
-- the detection is a vehicle (car, truck, bus, van), with enough confidence, inside the ego path
-  (|y| ≤ 1.8 m);
-- it is the nearest vehicle in the path and the next one is at least 5 m farther;
-- no pedestrian, bicycle or other non-vehicle in the path is nearer than the radar distance plus
-  the gate (the radar might be following it);
+The radar is an extra check, used only for the object straight ahead in the ego lane: one target is
+not a 3D map, and nothing beside the car or in another lane ever gets its distance. It labels a
+detection ([`perception/association.py`](../perception/association.py)) only when, in openpilot's
+calibrated frame (x forward, y right, z down):
+- the car's path is known: speed and yaw rate from `deviceMotion` (the comma device's own sensors,
+  at most 100 ms old), curvature = yaw rate / max(speed, 3 m/s), positive turning right (checked on
+  a real segment: +0.998 correlation with the heading change, −0.981 with the steering angle);
+- the road ahead is not curving away: the lane centre at the radar distance, `curvature · x² / 2`,
+  is within 1 m of straight ahead;
+- the detection is a vehicle (car, truck, bus, van), with enough confidence, within 1.5 m of the
+  lane centre at its distance;
+- it is the nearest vehicle in the lane and the next one is at least 5 m farther;
+- no vehicle in the next lanes (up to 4 m beyond the ego lane, both sides) is near the radar
+  distance: a car cutting in, or a neighbour the radar might be following;
+- no pedestrian, bicycle or other non-vehicle is in the lane before the radar distance, or near the
+  radar distance in the lane or the next lanes;
 - its vision distance is within max(5 m, 25 %) of the radar distance.
 
-Otherwise there is no label, and the reason is kept. The radar origin is not the camera:
-`radar_to_reference_m` (radar distance + offset = x in the calibrated frame) must be given for the
-car. openpilot's radard uses 1.52 m for every car (`OPENPILOT_RADAR_TO_CAMERA_M`); it is a generic
-value, not a measurement.
+Otherwise there is no label, and the reason is kept. On a real urban segment (`…a09`, 1198 frames
+with motion) the curve rule leaves the label possible in 94 % of the frames for a target at 10 m,
+61 % at 30 m and 18 % at 60 m.
+
+The radar origin is not the camera: `radar_to_reference_m` (radar distance + offset = x in the
+calibrated frame) must be given for the car. openpilot's radard uses 1.52 m for every car
+(`OPENPILOT_RADAR_TO_CAMERA_M`); it is a generic value, not a measurement.
 
 ## Kept apart
 

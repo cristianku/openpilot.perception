@@ -5,7 +5,8 @@
 prints what a segment offers: frames, calibration, and whether the car's radar can be read.
 
 A sample says which frame (camera, index in the .hevc, monotonic time), the calibration in force,
-and the radar measurement aligned to it, if any, with the time skew. Decoding the image is left to
+the curvature of the car's path (deviceMotion), and the radar measurement aligned to it, if any,
+with the time skew. Decoding the image is left to
 the caller (`load_image`), e.g. openpilot.distill's NVDEC helpers: this package stays independent of
 them. Without radar the adapter still returns every frame: training continues vision-only.
 
@@ -20,7 +21,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from perception.association import Association, AssociationConfig, Detection, associate
+from perception.association import Association, AssociationConfig, Detection, associate, path_curvature
 from perception.provenance import Provenance
 from perception.radar.oem_lead import MAX_FRAME_SKEW_NS, OemLeadSample, OemLeadTrack, read_oem_leads
 from perception.sources.comma_log import CAMERA_STREAMS, Calibration, CommaLog, FrameRef, read_rlog
@@ -33,6 +34,7 @@ MS = 1_000_000
 class FrameSample:
     frame: FrameRef
     calibration: Calibration | None
+    curvature: float | None         # 1/m, positive turning right; None without recent motion
     radar: OemLeadSample | None
     radar_skew_ns: int | None       # frame time - measurement time
     radar_status: str               # 'aligned', or why there is no radar for this frame
@@ -51,12 +53,14 @@ class SegmentAdapter:
         self.samples: list[FrameSample] = []
         for frame in log.frames[camera]:
             calibration = log.calibration_at(frame.t_ns)
+            motion = log.motion_at(frame.t_ns)
+            curvature = path_curvature(motion.speed_mps, motion.yaw_rate) if motion is not None else None
             if not self.radar.available or not self.radar.samples:
                 radar, skew, status = None, None, self.radar.reason
             else:
                 radar, skew = self.radar.nearest(frame.t_ns, max_skew_ns)
                 status = 'aligned' if radar is not None else f'no radar measurement within {max_skew_ns // MS} ms'
-            self.samples.append(FrameSample(frame, calibration, radar, skew, status))
+            self.samples.append(FrameSample(frame, calibration, curvature, radar, skew, status))
 
     @classmethod
     def from_rlog(cls, path: str, **kwargs) -> SegmentAdapter:
@@ -77,7 +81,7 @@ def depth_targets(sample: FrameSample, detections: Sequence[Detection], config: 
                   allow_synthetic: bool = False) -> tuple[np.ndarray, np.ndarray, Association]:
     """x targets (m, calibrated frame) and validity, one per detection, for one frame. Only a genuine
     radar measurement makes a target; synthetic ones too with allow_synthetic (pipeline tests)."""
-    association = associate(list(detections), sample.radar, sample.calibration is not None, config)
+    association = associate(list(detections), sample.radar, sample.calibration is not None, sample.curvature, config)
     target = np.full(len(detections), np.nan, dtype=np.float32)
     valid = np.zeros(len(detections), dtype=bool)
     usable = association.associated and (association.radar.provenance.measured
@@ -92,8 +96,9 @@ def depth_targets(sample: FrameSample, detections: Sequence[Detection], config: 
 
 def describe(adapter: SegmentAdapter) -> str:
     calibrated = sum(s.calibration is not None for s in adapter.samples)
+    with_motion = sum(s.curvature is not None for s in adapter.samples)
     aligned = sum(s.radar is not None for s in adapter.samples)
-    lines = [f'{adapter.camera}: {len(adapter)} frames, {calibrated} calibrated',
+    lines = [f'{adapter.camera}: {len(adapter)} frames, {calibrated} calibrated, {with_motion} with car motion',
              f'radar: {adapter.radar.reason}']
     if adapter.radar.available:
         lines.append(f'radar: {aligned} frames with a measurement aligned, repeated {adapter.radar.repeated}, '

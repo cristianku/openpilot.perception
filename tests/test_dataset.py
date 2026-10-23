@@ -3,7 +3,7 @@ import unittest
 
 import numpy as np
 
-from fakes import MS, calibration, car_state, encode_idx, schemas
+from fakes import MS, calibration, car_state, encode_idx, motion, schemas
 from perception.association import AssociationConfig, Detection
 from perception.dataset import SegmentAdapter, depth_targets
 from perception.provenance import Provenance
@@ -60,12 +60,15 @@ class Adapter(unittest.TestCase):
 
 class DepthTargets(unittest.TestCase):
     def setUp(self):
-        # frame 0 at S, before the first calibration (S + 1 s); frame 1 at S + 2 s, calibrated
+        # frame 0 at S, before the first calibration (S + 1 s); frame 1 at S + 2 s, calibrated;
+        # frame 2 at S + 4 s, calibrated but without recent car motion
         events = [encode_idx('narrowRoadEncodeIdx', 0, S + 8 * MS), calibration(S + S),
                   encode_idx('narrowRoadEncodeIdx', 1, S + 2 * S + 8 * MS),
-                  *radar(schemas().CarStateNew, [S, S + 2 * S])]
+                  encode_idx('narrowRoadEncodeIdx', 2, S + 4 * S + 8 * MS),
+                  motion(S - 20 * MS), motion(S + 2 * S - 20 * MS),
+                  *radar(schemas().CarStateNew, [S, S + 2 * S, S + 4 * S])]
         self.adapter = SegmentAdapter(read_events(events))
-        self.detections = [Detection(1, 'pedestrian', 0.9, (12.0, 3.0, 0.0)),  # on the pavement
+        self.detections = [Detection(1, 'pedestrian', 0.9, (12.0, 7.0, 0.0)),  # on the pavement
                            Detection(2, 'car', 0.9, (31.0, 0.2, 0.0)),
                            Detection(3, 'car', 0.9, (55.0, 0.1, 0.0))]
 
@@ -85,11 +88,19 @@ class DepthTargets(unittest.TestCase):
         self.assertFalse(valid.any())
         self.assertEqual(association.reason, 'no calibration')
 
+    def test_no_target_without_car_motion(self):
+        sample = self.adapter.samples[2]
+        self.assertIsNotNone(sample.calibration)
+        self.assertIsNone(sample.curvature)
+        target, valid, association = depth_targets(sample, self.detections, CONFIG)
+        self.assertFalse(valid.any())
+        self.assertEqual(association.reason, 'no car motion')
+
     def test_synthetic_radar_is_not_a_label_unless_asked(self):
         sample = self.adapter.samples[1]
         synthetic = OemLeadSample(t_ns=sample.radar.t_ns, distance_m=28.5, relative_speed_mps=None,
                                   provenance=Provenance.SYNTHETIC)
-        sample = type(sample)(sample.frame, sample.calibration, synthetic, 0, 'aligned')
+        sample = type(sample)(sample.frame, sample.calibration, sample.curvature, synthetic, 0, 'aligned')
         self.assertFalse(depth_targets(sample, self.detections, CONFIG)[1].any())
         self.assertTrue(depth_targets(sample, self.detections, CONFIG, allow_synthetic=True)[1][1])
 

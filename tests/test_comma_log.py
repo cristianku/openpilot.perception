@@ -2,7 +2,7 @@
 import math
 import unittest
 
-from fakes import MS, Event, calibration, car_state, encode_idx, schemas
+from fakes import MS, Event, calibration, car_state, encode_idx, motion, schemas
 from perception.sources import comma_log
 
 S = 1_000_000_000
@@ -44,6 +44,18 @@ class Calibrations(unittest.TestCase):
         latest = log.calibration_at(S + 10 * S)
         self.assertEqual(latest.rpy_calib, (0.0, 0.03, 0.01))
         self.assertIsNone(latest.height_m)
+
+
+class Motion(unittest.TestCase):
+    def test_motion_in_force(self):
+        events = [motion(S, speed=20.0, yaw_rate=0.04), motion(S + 50 * MS, valid=False),
+                  motion(S + 100 * MS, speed=21.0, timestamp=0)]
+        log = comma_log.read_events(events)
+        self.assertEqual([m.t_ns for m in log.motion], [S, S + 103 * MS])   # no timestamp: logMonoTime
+        self.assertIsNone(log.motion_at(S - 1))
+        self.assertEqual(log.motion_at(S + 60 * MS).yaw_rate, 0.04)
+        self.assertIsNone(log.motion_at(S + 300 * MS))                       # 197 ms old: too old
+        self.assertEqual(log.motion_at(S + 150 * MS).speed_mps, 21.0)
 
 
 class CarStates(unittest.TestCase):

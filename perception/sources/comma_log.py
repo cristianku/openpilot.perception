@@ -1,12 +1,14 @@
 """What a comma rlog gives to perception, read once with openpilot's Cap'n Proto tools: the frames of
-fcamera.hevc and ecamera.hevc with their monotonic times, the calibration over time, and the
-carState messages (for the car's radar, see perception.radar.oem_lead).
+fcamera.hevc and ecamera.hevc with their monotonic times, the calibration over time, the motion of
+the car (deviceMotion: speed and yaw rate, from the comma device itself) and the carState messages
+(for the car's radar, see perception.radar.oem_lead).
 
 Same conventions as openpilot.distill's localizer: fcamera = narrowRoadEncodeIdx,
 ecamera = wideRoadEncodeIdx, frame index in the .hevc = encodeIdx.segmentId, frame time =
 timestampEof - 8 ms on the logMonoTime clock, calibration from extrinsicsCalibration when
-calStatus is "calibrated". Nothing missing is filled in: a frame without timestamps or an
-uncalibrated period is simply absent.
+calStatus is "calibrated", motion from deviceMotion (its timestamp, else logMonoTime). Nothing
+missing is filled in: a frame without timestamps, an uncalibrated period or a gap in the motion is
+simply absent.
 """
 from __future__ import annotations
 
@@ -21,6 +23,8 @@ CAMERA_STREAMS = {
 }
 CALIBRATION_STREAM = 'extrinsicsCalibration'
 CAR_STATE_STREAM = 'carState'
+MOTION_STREAM = 'deviceMotion'
+MAX_MOTION_AGE_NS = 100_000_000   # deviceMotion is 20 Hz: two periods
 FRAME_TIME_OFFSET_NS = 8_000_000  # frame time = timestampEof - 8 ms, as the localizer of openpilot.distill
 
 
@@ -40,12 +44,21 @@ class Calibration:
     height_m: float | None
 
 
+@dataclass(frozen=True)
+class Motion:
+    t_ns: int
+    speed_mps: float     # forward, device frame
+    yaw_rate: float      # rad/s about the device z axis (down): positive turning right
+
+
 @dataclass
 class CommaLog:
     frames: dict[str, list[FrameRef]] = field(default_factory=lambda: {camera: [] for camera in CAMERA_STREAMS})
     calibrations: list[Calibration] = field(default_factory=list)
     car_states: list = field(default_factory=list)  # (logMonoTime, carState reader)
+    motion: list[Motion] = field(default_factory=list)
     _calibration_times: list[int] = field(default_factory=list, repr=False)
+    _motion_times: list[int] = field(default_factory=list, repr=False)
 
     def calibration_at(self, t_ns: int) -> Calibration | None:
         """The last calibrated values logged at or before t_ns; None before the first one."""
@@ -53,6 +66,15 @@ class CommaLog:
             self._calibration_times = [c.t_ns for c in self.calibrations]
         position = bisect.bisect_right(self._calibration_times, t_ns)
         return self.calibrations[position - 1] if position else None
+
+    def motion_at(self, t_ns: int, max_age_ns: int = MAX_MOTION_AGE_NS) -> Motion | None:
+        """The last motion sample at or before t_ns, if not older than max_age_ns."""
+        if len(self._motion_times) != len(self.motion):
+            self._motion_times = [m.t_ns for m in self.motion]
+        position = bisect.bisect_right(self._motion_times, t_ns)
+        if not position or t_ns - self.motion[position - 1].t_ns > max_age_ns:
+            return None
+        return self.motion[position - 1]
 
 
 def _frame(camera: str, event, index) -> FrameRef | None:
@@ -76,6 +98,14 @@ def _calibration(event, calibration) -> Calibration | None:
                        height_m=height_m)
 
 
+def _motion(event, motion) -> Motion | None:
+    speed, yaw = motion.velocityDevice, motion.angularVelocityDevice
+    if not event.valid or not speed.valid or not yaw.valid or not (math.isfinite(speed.x) and math.isfinite(yaw.z)):
+        return None
+    t_ns = int(motion.timestamp) or int(event.logMonoTime)
+    return Motion(t_ns=t_ns, speed_mps=float(speed.x), yaw_rate=float(yaw.z))
+
+
 def read_events(events: Iterable) -> CommaLog:
     """CommaLog from the events of a log, in log order."""
     log = CommaLog()
@@ -92,9 +122,14 @@ def read_events(events: Iterable) -> CommaLog:
                 log.calibrations.append(calibration)
         elif which == CAR_STATE_STREAM and event.valid:
             log.car_states.append((int(event.logMonoTime), event.carState))
+        elif which == MOTION_STREAM:
+            motion = _motion(event, event.deviceMotion)
+            if motion is not None:
+                log.motion.append(motion)
     for frames in log.frames.values():
         frames.sort(key=lambda frame: frame.index)
     log.calibrations.sort(key=lambda calibration: calibration.t_ns)
+    log.motion.sort(key=lambda motion: motion.t_ns)
     return log
 
 

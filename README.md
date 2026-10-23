@@ -16,9 +16,9 @@ yet.
 
 | Where | What |
 | --- | --- |
-| [`perception/sources/comma_log.py`](perception/sources/comma_log.py) | Frames of `fcamera.hevc` / `ecamera.hevc` with monotonic times, calibration over time, `carState`. |
+| [`perception/sources/comma_log.py`](perception/sources/comma_log.py) | Frames of `fcamera.hevc` / `ecamera.hevc` with monotonic times, calibration over time, car motion (`deviceMotion`), `carState`. |
 | [`perception/radar/oem_lead.py`](perception/radar/oem_lead.py) | The car's radar lead from `carState` (`stockRadar*` fields); off, vision-only, when the schema has none. |
-| [`perception/association.py`](perception/association.py) | Pairs the single radar target with at most one vehicle detection, only when unambiguous. |
+| [`perception/association.py`](perception/association.py) | Pairs the single radar target with at most the vehicle straight ahead in the ego lane (path from yaw rate), never with objects beside the car or in other lanes. |
 | [`perception/dataset.py`](perception/dataset.py) | Dataset adapter: one sample per frame, radar aligned in time, depth targets with validity. |
 | [`perception/losses.py`](perception/losses.py), [`perception/metrics.py`](perception/metrics.py) | Depth loss with a validity mask; distance errors on genuine, associated labels only. |
 | [`perception/viz.py`](perception/viz.py) | Per object: vision distance, radar measurement, difference, validity, source. |
