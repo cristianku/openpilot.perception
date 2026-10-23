@@ -7,16 +7,12 @@ license; check it again before adding or redistributing anything.
 
 | Component | Used for | License |
 | --- | --- | --- |
-| [numpy](https://numpy.org) | arrays of the radar labels | BSD-3-Clause |
-| [openpilot](https://github.com/commaai/openpilot) (`tools.lib.logreader`) | reading comma `rlog.zst` | MIT |
-| [opendbc](https://github.com/commaai/opendbc) | tests only: cross-check of the bit layout against `psa_aee2010_r3.dbc` | MIT |
-
-## Derived knowledge
-
-- The bit layout of 0x2F6 and 0x4F6 follows `opendbc/dbc/psa_aee2010_r3.dbc` (opendbc, MIT). No
-  DBC file is copied here.
-- The 0x2F6 checksum seed (`0x8`) follows `cristianku/opendbc@psa-torque-sunny`
-  (`opendbc/car/psa/psacan.py`, MIT), confirmed on recorded frames.
+| [numpy](https://numpy.org) | arrays | BSD-3-Clause |
+| [PyTorch](https://pytorch.org) | depth loss | BSD-3-Clause |
+| [openpilot](https://github.com/commaai/openpilot) (`tools.lib.logreader`, `common.transformations`) | reading comma `rlog.zst`, rotations | MIT |
+| [opendbc](https://github.com/commaai/opendbc) `car.capnp` (through openpilot's cereal) | the `carState` schema | MIT |
+| [OpenCV](https://opencv.org) (optional) | drawing the objects on a frame | Apache-2.0 |
+| [pycapnp](https://github.com/capnproto/pycapnp) (tests) | the synthetic `carState` versions | BSD-2-Clause |
 
 ## Models and weights
 
@@ -26,6 +22,4 @@ must not be published from this repository.
 
 ## Data
 
-No recording is stored in this repository. The two 8-byte CAN frames in
-`tests/test_psa_radar.py` are single radar frames (lead distance and status only), used as test
-fixtures.
+No recording is stored in this repository. The tests build synthetic messages only.

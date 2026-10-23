@@ -1,13 +1,18 @@
 [project]
 name = "openpilot-perception"
 version = "0.1.0"
-description = "Spatial perception from comma road video, with metric supervision from real sensors"
+description = "3D object perception from comma road video, with metric supervision from real sensors"
 readme = "README.md"
 requires-python = ">=3.12.3,<3.13"
 license = {text = "MIT"}
 dependencies = [
   "numpy>=2.0",
+  "torch",
 ]
+
+[project.optional-dependencies]
+# Drawing the objects on a frame (perception.viz.draw).
+viz = ["opencv-python-headless"]
 
 [dependency-groups]
 dev = [

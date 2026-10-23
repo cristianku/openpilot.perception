@@ -1,1 +1,1 @@
-"""openpilot.perception: spatial perception from comma road video, see README.md."""
+"""openpilot.perception: 3D object perception from comma road video, see README.md."""
